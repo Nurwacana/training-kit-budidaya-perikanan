@@ -1,0 +1,7 @@
+# Name,   Type, SubType, Offset,   Size,     Flags
+# Note: Type 'data' is for data partitions, 'app' for application partitions.
+# The offsets and sizes must align with 4KB (0x1000) boundaries.
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x150000,
+spiffs,   data, spiffs,  0x160000, 0x290000,

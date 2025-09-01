@@ -8,7 +8,25 @@
 #include <LiquidCrystal_I2C.h>
 #include <Wire.h>
 #include <math.h>
+#include <Arduino.h>
+#include <FS.h>
+#include <SPIFFS.h>
 
+// ===== User defined constants =====
+// sudah terdefinisi di header esp32-hal-gpio.h
+// #define GPIO_OUT_W1TS_REG 0x3FF44008
+// #define GPIO_OUT_W1TC_REG 0x3FF4400C
+
+#define TWO_POINT_CALIBRATION 0
+// Single point calibration needs to be filled CAL1_V and CAL1_T
+#define CAL1_V (1600) // mv
+#define CAL1_T (25)   // ℃
+// Two-point calibration needs to be filled CAL2_V and CAL2_T
+// CAL1 High temperature point, CAL2 Low temperature point
+#define CAL2_V (1300) // mv
+#define CAL2_T (15)   // ℃
+
+// Pin definitions
 #define PIN_PH 32
 #define PIN_TURBIDITY 33
 #define PIN_OKSIGEN 34
@@ -19,58 +37,73 @@
 #define PIN_RELAY_3 26
 #define PIN_RELAY_4 25
 
+// Lookup table for Dissolved Oxygen (DO) in mg/L at different temperatures (0-40°C)
+const uint16_t DO_Table[41] = {
+    14460, 14220, 13820, 13440, 13090, 12740, 12420, 12110, 11810, 11530,
+    11260, 11010, 10770, 10530, 10300, 10080, 9860, 9660, 9460, 9270,
+    9080, 8900, 8730, 8570, 8410, 8250, 8110, 7960, 7820, 7690,
+    7560, 7430, 7300, 7180, 7070, 6950, 6840, 6730, 6630, 6530, 6410};
+
+const long tempRequestInterval = 750; // Minta suhu setiap 750 ms
+
+
 const char *ssid = "Pertanian IPB utama";
 const char *password = "pertanian dan pangan";
 
-WebServer server(80);
+const char *ap_ssid = "Trainer_Akuaponik";
+const char *ap_password = "12345678";
 
 const int maxDataPoints = 30;
 
+// ===== User defined classes =====
 class Analog
 {
 public:
+  enum VarType
+  {
+    VOLTAGE,
+    FINAL,
+    PERCENT
+  };
   /// @brief inisialisasi pin analog dengan filter alpha
   /// @param p pin analog
   /// @param a variabel alpha (0 < a < 1), semakin kecil semakin halus
-  Analog(int p, float a) : pin(p), alpha(a), voltage(0.0), final(0.0)
+  Analog(int p, float a) : pin(p), alpha(a), voltage(0.0), final(0.0), percent(0.0), smoothedRaw(0.0)
   {
     pinMode(pin, INPUT);
   }
   /// @brief panggil di loop utama
   void update()
   {
-    uint16_t raw = analogRead(pin);
-    // Hitung nilai rata-rata bergerak eksponensial
-    voltage = (alpha * ((float)raw / 4095.0f) * 3.3f) + ((1 - alpha) * voltage);
-    percent = ((float)raw / 4095.0f) * 100.0f;
+    if (firstRead)
+    {
+      smoothedRaw = (float)analogRead(pin);
+      firstRead = false;
+    }
+    else
+    {
+      smoothedRaw = (alpha * (float)analogRead(pin)) + ((1 - alpha) * smoothedRaw);
+    }
+    voltage = (round(smoothedRaw) / 4095.0f) * 3.3f;
+    percent = (round(smoothedRaw) / 4095.0f) * 100.0f;
   }
   /// @brief mendapatkan pin analog
   uint8_t getPin() { return pin; }
 
   /// @brief mengambil nilai variabel (alpha, voltage, final)
-  float getVar(String var)
-  {
-    for (unsigned int i = 0; i < var.length(); i++)
+  float getVar(VarType var) const
+  { // Tambahkan 'const' karena fungsi ini tidak mengubah state objek
+    switch (var)
     {
-      char c = var[i];
-      if (c >= 'A' && c <= 'Z')
-      {
-        var[i] = c + ('a' - 'A');
-      }
-    }
-    if (var == "alpha")
-      return alpha;
-    else if (var == "voltage")
+    case VOLTAGE:
       return voltage;
-    else if (var == "final")
+    case FINAL:
       return final;
-    else
-      return 0.0;
-  }
-
-  float getPercent()
-  {
-    return (voltage / 3.3f) * 100.0f;
+    case PERCENT:
+      return percent;
+    default:
+      return 0.0; // Nilai default jika ada case yang tidak terduga
+    }
   }
 
   void setFinal(float v)
@@ -84,34 +117,11 @@ private:
   float voltage;
   float final;
   float percent;
+  float smoothedRaw;
+  bool firstRead = true;
 };
 
-Analog phSensor = Analog(PIN_PH, 0.1f);
-Analog turbiditySensor = Analog(PIN_TURBIDITY, 0.1f);
-Analog oksigenSensor = Analog(PIN_OKSIGEN, 0.1f);
-Analog potensiometer = Analog(PIN_POTENSIO, 0.1f);
-
-unsigned long lastTempRequest = 0;
-const long tempRequestInterval = 750; // Minta suhu setiap 1 detik
-bool tempReady = false;
-
-OneWire oneWire(PIN_SUHU);
-
-DallasTemperature sensorSuhu(&oneWire);
-
-unsigned long lastUpdate_sensor = 0;
-
-/*
-  Inisialisasi objek LCD
-  Parameter:
-  - 0x27: Alamat I2C. Ini adalah alamat yang paling umum.
-          Jika tidak berhasil, alamat Anda mungkin 0x3F. (Lihat bagian troubleshooting di bawah)
-  - 16: Jumlah kolom karakter pada LCD
-  - 2: Jumlah baris pada LCD
-*/
-LiquidCrystal_I2C lcd(0x27, 16, 2);
-
-// Struktur node sekarang menjadi bagian privat dari kelas
+// Struktur data untuk menyimpan data sensor
 struct DataNode
 {
   float ph;
@@ -139,7 +149,6 @@ public:
     }
   }
 
-  // Metode untuk menambahkan data ke linked list
   void addData(float ph, float turb, float oks, float suhu)
   {
     // 1. Buat node baru
@@ -215,58 +224,292 @@ private:
   int count; // Menghitung node secara efisien
 };
 
+// ===== User Global variables =====
+Analog phSensor = Analog(PIN_PH, 0.1f);
+Analog turbiditySensor = Analog(PIN_TURBIDITY, 0.1f);
+Analog oksigenSensor = Analog(PIN_OKSIGEN, 0.1f);
+Analog potensiometer = Analog(PIN_POTENSIO, 0.1f);
+static float suhuValue = 0;
+
+unsigned long lastTempRequest = 0;
+
+OneWire oneWire(PIN_SUHU);
+DallasTemperature sensorSuhu(&oneWire);
+
+unsigned long lastUpdate_sensor = 0;
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+WebServer server(80);
+
 DataList sensorData(maxDataPoints);
 
+bool relayState[4] = {false, false, false, false};
+
+// ===== User defined functions =====
 // ===== Web =====
 void handleRoot();
 void handleData();
 void handleLast();
+void handleRelayStatus();
+// Handler untuk mengirim file script.js
+void handleScriptJs();
+void handleChartJs();
+void handleLuxonJs();
+void handleAdapterLuxonJs();
+void handleStreamingPluginJs();
+void handleSbAdmin2Css();
 // ===== LCD I2C =====
 void timerLcdI2c();
 
-// void handleSensorTurbidity() {
-//   calculateExponentialMovingAverage(sensor.turbidity);
-//   sensor.turbidity.final = -1120.4 * sq(sensor.turbidity.voltage) + 5742.3 * sensor.turbidity.voltage - 4353.8;
-// }
-
-void setup()
+void fastWrite(uint8_t pin, uint8_t value)
 {
-  Serial.begin(115200);
+  // Buat bitmask: 1 digeser ke kiri sebanyak 'pin'
+  const uint32_t bitmask = (1UL << pin);
+
+  // Deklarasi pointer ke register GPIO
+  // Keyword 'volatile' penting agar kompilator tidak mengoptimasi penulisan
+  volatile uint32_t *set_reg = (volatile uint32_t *)GPIO_OUT_W1TS_REG;
+  volatile uint32_t *clear_reg = (volatile uint32_t *)GPIO_OUT_W1TC_REG;
+
+  if (value == 1)
+  {
+    // Tulis bitmask ke register set untuk menyalakan pin
+    *set_reg = bitmask;
+  }
+  else
+  {
+    // Tulis bitmask ke register clear untuk mematikan pin
+    *clear_reg = bitmask;
+  }
+}
+
+void tes_relay(uint8_t p, unsigned long &last, bool &state)
+{
+  if (millis() - last >= 1000)
+  {
+    last = millis();
+
+    if (state == 0)
+    {
+      fastWrite(p, HIGH);
+      state = 1;
+    }
+    else
+    {
+      fastWrite(p, LOW);
+      state = 0;
+    }
+  }
+}
+
+void handlePhSensor()
+{
+  const float calibration_value = 21.34 + 0.0f;
+  float voltage = phSensor.getVar(Analog::VOLTAGE);
+
+  float phValue = -5.70 * voltage + calibration_value;
+  phSensor.setFinal(phValue);
+}
+
+void handleTurbiditySensor()
+{
+  float voltage = turbiditySensor.getVar(Analog::VOLTAGE);
+
+  const float clear_point = 2.5;
+  const float dirty_point = 0.5;
+  const float NTU_MAX = 3000.0f;
+
+  float a = -NTU_MAX / ((clear_point - dirty_point) *
+                        (clear_point - dirty_point));
+
+  float ntu = a * (voltage - dirty_point) * (voltage - dirty_point) + NTU_MAX;
+
+  if (ntu < 0)
+    ntu = 0;
+  if (ntu > NTU_MAX)
+    ntu = NTU_MAX;
+
+  // turbidityValue = 909.09 * (3.3 - voltage);
+
+  turbiditySensor.setFinal(ntu);
+}
+
+int16_t readDO(uint32_t voltage_mv, uint8_t temperature_c)
+{
+
+#if TWO_POINT_CALIBRATION == 0
+  uint16_t V_saturation = (uint32_t)CAL1_V + (uint32_t)35 * temperature_c - (uint32_t)CAL1_T * 35;
+  return (voltage_mv * DO_Table[temperature_c] / V_saturation);
+#else
+  uint16_t V_saturation = (int16_t)((int8_t)temperature_c - CAL2_T) * ((uint16_t)CAL1_V - CAL2_V) / ((uint8_t)CAL1_T - CAL2_T) + CAL2_V;
+  return (voltage_mv * DO_Table[temperature_c] / V_saturation);
+#endif
+}
+
+void handleOksigenSensor()
+{
+  float voltage_v = oksigenSensor.getVar(Analog::VOLTAGE);
+
+  uint16_t voltage_mv = (uint16_t)(voltage_v * 1000.0);
+
+  uint8_t currentTemperature = (uint8_t)round(suhuValue);
+  // Serial.println(analogRead(PIN_OKSIGEN));
+  int tes = analogRead(PIN_OKSIGEN);
+  static int anjay = 0;
+  if (tes > 0)
+  {
+    // Serial.println(tes);
+  }
+
+  // 4. Panggil fungsi readDO() untuk menghitung nilai Dissolved Oxygen (mg/L).
+  float o2Value = readDO(voltage_mv, currentTemperature);
+
+  oksigenSensor.setFinal(o2Value);
+}
+
+void handleButton()
+{
+  if (!server.hasArg("relay"))
+  {
+    server.send(400, "application/json", "{\"error\":\"Missing relay parameter\"}");
+    return;
+  }
+  String relay = server.arg("relay");
+  int idx = -1;
+  if (relay == "relay1")
+    idx = 0;
+  else if (relay == "relay2")
+    idx = 1;
+  else if (relay == "relay3")
+    idx = 2;
+  else if (relay == "relay4")
+    idx = 3;
+
+  if (idx == -1)
+  {
+    server.send(400, "application/json", "{\"error\":\"Invalid relay\"}");
+    return;
+  }
+
+  relayState[idx] = !relayState[idx]; // toggle state
+
+  int pin = PIN_RELAY_1 + idx; // PIN_RELAY_1,2,3,4 harus urut
+  digitalWrite(pin, relayState[idx] ? HIGH : LOW);
+
+  // Kirim status semua relay dalam JSON
+  String json = "{";
+  for (int i = 0; i < 4; i++)
+  {
+    json += "\"relay" + String(i + 1) + "\":" + (relayState[i] ? "true" : "false");
+    if (i < 3)
+      json += ",";
+  }
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void handleRelayStatus()
+{
+  String json = "{";
+  for (int i = 0; i < 4; i++)
+  {
+    json += "\"relay" + String(i + 1) + "\":" + (relayState[i] ? "true" : "false");
+    if (i < 3)
+      json += ",";
+  }
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void modeWifi()
+{
   Serial.println("Inisialisasi WiFi...");
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Inisialisasi");
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED)
   {
     delay(500);
     Serial.print(".");
+    lcd.setCursor(0, 1);
+    lcd.print("Menghubungkan..");
   }
   Serial.println("\nWiFi connected");
   Serial.println(WiFi.localIP());
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("WiFi Terhubung");
+}
+
+void modeAP()
+{
+  Serial.println("Mengatur mode Access Point...");
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Mode AP");
+  delay(500);
+  WiFi.mode(WIFI_AP);
+  bool result = WiFi.softAP(ap_ssid, ap_password);
+  if (!result)
+  {
+    Serial.println("Gagal mengatur AP!");
+    lcd.setCursor(0, 1);
+    lcd.print("Gagal AP");
+    delay(2000);
+    return;
+  }
+  IPAddress IP = WiFi.softAPIP();
+  Serial.print("AP IP address: ");
+  Serial.println(IP);
+  lcd.setCursor(0, 1);
+  lcd.print("AP IP:");
+  lcd.setCursor(0, 1);
+  lcd.print(IP);
+  delay(2000);
+}
+
+void setup()
+{
+  Serial.println(analogRead(PIN_PH));
+  Serial.begin(115200);
+  lcd.init();
+  lcd.backlight();
+
+  // modeWifi();
+  modeAP();
+
+  if (!SPIFFS.begin(true))
+  {
+    Serial.println("SPIFFS Mount Failed");
+    return;
+  }
 
   if (MDNS.begin("esp32"))
     Serial.println("mDNS: http://esp32.local");
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("mDNS:");
+  lcd.setCursor(0, 1);
+  lcd.print("esp32.local");
+  delay(2000);
 
-
+  server.on("/sb-admin-2.css", handleSbAdmin2Css);
+  server.on("/chart.js", HTTP_GET, handleChartJs);
+  server.on("/luxon.js", HTTP_GET, handleLuxonJs);
+  server.on("/chartjs-adapter-luxon.js", HTTP_GET, handleAdapterLuxonJs);
+  server.on("/chartjs-plugin-streaming.js", HTTP_GET, handleStreamingPluginJs);
+  server.on("/script.js", handleScriptJs);
+  server.on("/button", HTTP_POST, handleButton);
+  server.on("/relay-status", HTTP_GET, handleRelayStatus);
   server.on("/", handleRoot);
   server.on("/data", handleData); // historis (opsional)
   server.on("/last", handleLast); // realtime
   server.begin();
 
-  // Mulai komunikasi I2C. Untuk ESP32, pin defaultnya sudah D21 (SDA) dan D22 (SCL).
   Wire.begin();
-  // Inisialisasi LCD
-  lcd.init();
-  // Nyalakan lampu latar (backlight) LCD
-  lcd.backlight();
-  // Kosongkan layar untuk memastikan tidak ada sisa teks
-  lcd.clear();
-  // Atur kursor ke kolom 0, baris 0 (baris pertama)
-  lcd.setCursor(0, 0);
-  lcd.print("Halo, Dunia!");
-  // Atur kursor ke kolom 0, baris 1 (baris kedua)
-  lcd.setCursor(0, 1);
-  lcd.print("ESP32 & LCD I2C");
-
   sensorSuhu.begin();
 
   phSensor.update();
@@ -278,33 +521,69 @@ void setup()
   pinMode(PIN_RELAY_2, OUTPUT);
   pinMode(PIN_RELAY_3, OUTPUT);
   pinMode(PIN_RELAY_4, OUTPUT);
+
+  fastWrite(PIN_RELAY_1, HIGH);
+  fastWrite(PIN_RELAY_2, HIGH);
+  fastWrite(PIN_RELAY_3, HIGH);
+  fastWrite(PIN_RELAY_4, HIGH);
+
+  sensorSuhu.requestTemperatures();
+  suhuValue = sensorSuhu.getTempCByIndex(0);
 }
 
 void loop()
 {
+  Serial.println(phSensor.getVar(Analog::VOLTAGE));
+  static unsigned long last_relay_1 = 0;
+  static unsigned long last_relay_2 = 0;
+  static unsigned long last_relay_3 = 0;
+  static unsigned long last_relay_4 = 0;
+  static bool state_relay_1 = 0;
+  static bool state_relay_2 = 0;
+  static bool state_relay_3 = 0;
+  static bool state_relay_4 = 0;
+  static bool tempReady = false;
+  static bool firstRun = false;
+  if (!firstRun)
+  {
+    lcd.clear();
+    firstRun = true;
+  }
+
+  // tes_relay(PIN_RELAY_1, last_relay_1, state_relay_1);
+  // tes_relay(PIN_RELAY_2, last_relay_2, state_relay_2);
+  // tes_relay(PIN_RELAY_3, last_relay_3, state_relay_3);
+  // tes_relay(PIN_RELAY_4, last_relay_4, state_relay_4);
+  fastWrite(PIN_RELAY_1, relayState[0] ? LOW : HIGH);
+  fastWrite(PIN_RELAY_2, relayState[1] ? LOW : HIGH);
+  fastWrite(PIN_RELAY_3, relayState[2] ? LOW : HIGH);
+  fastWrite(PIN_RELAY_4, relayState[3] ? LOW : HIGH);
+
   server.handleClient();
   phSensor.update();
   turbiditySensor.update();
   oksigenSensor.update();
   potensiometer.update();
 
-  // Serial.println((uint8_t)potensiometer.getPercent());
+  handlePhSensor();
+  handleTurbiditySensor();
+  handleOksigenSensor();
 
   if (millis() - lastTempRequest >= tempRequestInterval)
   {
     lastTempRequest = millis();
     sensorSuhu.requestTemperatures(); // Langkah 1: Minta sensor mulai mengukur (tidak menunggu)
-    Serial.println("Meminta pembacaan suhu baru...");
+    // Serial.println("Meminta pembacaan suhu baru...");
     tempReady = true; // Tandai bahwa kita sudah boleh mengambil data nanti
   }
 
   if (millis() - lastUpdate_sensor >= 50)
   {
     lastUpdate_sensor = millis();
-    static float suhuValue = 0;
 
     if (tempReady)
     {
+      tempReady = false;
       suhuValue = sensorSuhu.getTempCByIndex(0);
 
       if (suhuValue == DEVICE_DISCONNECTED_C)
@@ -318,26 +597,47 @@ void loop()
         // Serial.printf("Suhu: %.2f °C\n", suhuValue);
       }
     }
+
     sensorData.addData(
-        phSensor.getVar("final"),
-        turbiditySensor.getVar("final"),
-        oksigenSensor.getVar("final"),
+        phSensor.getVar(Analog::FINAL),
+        turbiditySensor.getVar(Analog::FINAL),
+        oksigenSensor.getVar(Analog::FINAL),
         suhuValue);
   }
+  timerLcdI2c();
 }
 
 void timerLcdI2c()
 {
   DataNode *lastNode = sensorData.getLastNode();
   static unsigned long lastUpdateLcd = 0;
+
   if (millis() - lastUpdateLcd >= 500)
   {
     lastUpdateLcd = millis();
-    lcd.clear();
+
+    // Siapkan buffer untuk menampung teks per baris (16 karakter + 1 null terminator)
+    char line1[17];
+    char line2[17];
+
+    float ph_val = phSensor.getVar(Analog::FINAL);
+    float turb_val = turbiditySensor.getVar(Analog::FINAL);
+    float oks_val = oksigenSensor.getVar(Analog::FINAL);
+    int pot_val = (int)potensiometer.getVar(Analog::PERCENT);
+
+    // %-5.2f artinya: format float, lebar 5 karakter, 2 angka di belakang koma, rata kiri
+    sprintf(line1, "pH:%-5.2f C:%-5.2f", ph_val, suhuValue);
+
+    // %-4.0f artinya: format float, lebar 4 karakter, 0 angka di belakang koma, rata kiri
+    // %-3d%% artinya: format integer, lebar 3 karakter, rata kiri, diakhiri tanda %
+    sprintf(line2, "Tb:%-4.0f  P:%-3d%%", turb_val, pot_val);
+
+    // Cetak ke LCD
     lcd.setCursor(0, 0);
-    lcd.print("pH: " + String(lastNode ? lastNode->ph : 0.0, 2));
+    lcd.print(line1);
+
     lcd.setCursor(0, 1);
-    lcd.print("Suhu: " + String(lastNode ? lastNode->suhu : 0.0, 2) + " C");
+    lcd.print(line2);
   }
 }
 
@@ -375,6 +675,84 @@ void handleData()
   server.send(200, "application/json", json);
 }
 
+void handleSbAdmin2Css()
+{
+  File file = SPIFFS.open("/sb-admin-2.css", "r");
+  if (!file)
+  {
+    server.send(404, "text/plain", "CSS not found");
+    return;
+  }
+  server.streamFile(file, "text/css");
+  file.close();
+}
+
+// Tambahkan fungsi baru ini di main.cpp
+void handleScriptJs()
+{
+  File file = SPIFFS.open("/script.js", "r");
+  if (!file)
+  {
+    server.send(404, "text/plain", "JS not found");
+    return;
+  }
+  // Penting: Gunakan tipe konten "application/javascript"
+  server.streamFile(file, "application/javascript");
+  file.close();
+}
+
+// Handler untuk file chart.js
+void handleChartJs()
+{
+  File file = SPIFFS.open("/chart.js", "r");
+  if (!file)
+  {
+    server.send(404, "text/plain", "chart.js not found");
+    return;
+  }
+  server.streamFile(file, "application/javascript");
+  file.close();
+}
+
+// Handler untuk file luxon.js
+void handleLuxonJs()
+{
+  File file = SPIFFS.open("/luxon.js", "r");
+  if (!file)
+  {
+    server.send(404, "text/plain", "luxon.js not found");
+    return;
+  }
+  server.streamFile(file, "application/javascript");
+  file.close();
+}
+
+// Handler untuk file chartjs-adapter-luxon.js
+void handleAdapterLuxonJs()
+{
+  File file = SPIFFS.open("/chartjs-adapter-luxon.js", "r");
+  if (!file)
+  {
+    server.send(404, "text/plain", "adapter-luxon.js not found");
+    return;
+  }
+  server.streamFile(file, "application/javascript");
+  file.close();
+}
+
+// Handler untuk file chartjs-plugin-streaming.js
+void handleStreamingPluginJs()
+{
+  File file = SPIFFS.open("/chartjs-plugin-streaming.js", "r");
+  if (!file)
+  {
+    server.send(404, "text/plain", "streaming-plugin.js not found");
+    return;
+  }
+  server.streamFile(file, "application/javascript");
+  file.close();
+}
+
 void handleRoot()
 {
   String htmlString = R"rawliteral(
@@ -382,19 +760,20 @@ void handleRoot()
 <html lang="id">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>IoT Perairan Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+<title>Dashboard Perairan IoT</title>
+<link rel="stylesheet" href="/sb-admin-2.css">
 
 <!-- Chart.js + Streaming plugin -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-<script src="https://cdn.jsdelivr.net/npm/luxon@3"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-streaming@2"></script>
+<script src="/chart.js"></script>
+<script src="/luxon.js"></script>
+<script src="/chartjs-adapter-luxon.js"></script>
+<script src="/chartjs-plugin-streaming.js"></script>
 
 <style>
   body { font-family: Arial, sans-serif; background:#f5f5f5; margin:0; padding:20px; }
   h2 { text-align:center; margin-bottom:20px; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(350px,1fr)); gap:20px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:15px; }
   .card { background:#fff; border-radius:12px; padding:15px; box-shadow:0 4px 12px rgba(0,0,0,.1); display:flex; flex-direction:column; }
   .card h3 { margin:0 0 10px; font-size:1.05em; color:#333; }
   .wrap { position:relative; width:100%; height:220px; }
@@ -407,114 +786,77 @@ void handleRoot()
 </style>
 </head>
 <body>
-  <h2>📊 IoT Perairan Dashboard</h2>
-  <div class="grid">
-    <div class="card">
-      <h3>pH</h3>
-      <div class="wrap"><canvas id="chartPH"></canvas></div>
-      <table id="tablePH">
-        <thead><tr><th>Timestamp</th><th>pH</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <div class="card">
-      <h3>Kekeruhan (NTU)</h3>
-      <div class="wrap"><canvas id="chartTurbidity"></canvas></div>
-      <table id="tableTurbidity">
-        <thead><tr><th>Timestamp</th><th>NTU</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <div class="card">
-      <h3>Kadar Oksigen (mg/L)</h3>
-      <div class="wrap"><canvas id="chartOksigen"></canvas></div>
-      <table id="tableOksigen">
-        <thead><tr><th>Timestamp</th><th>mg/L</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <div class="card">
-      <h3>Suhu (°C)</h3>
-      <div class="wrap"><canvas id="chartSuhu"></canvas></div>
-      <table id="tableSuhu">
-        <thead><tr><th>Timestamp</th><th>°C</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </div>
-
-<script>
-let _last = null, _fetching = false;
-async function fetchLast(){
-  if (_fetching) return _last;
-  _fetching = true;
-  try {
-    const r = await fetch('/last', { cache:'no-store' });
-    _last = await r.json();
-    return _last;
-  } catch(e){ console.error(e); return _last; }
-  finally { _fetching = false; }
-}
-
-function makeRealtimeChart(canvasId, key, color, yMin, yMax){
-  const ctx = document.getElementById(canvasId).getContext('2d');
-  return new Chart(ctx, {
-    type: 'line',
-    data: { datasets: [{
-      label: key, data: [],
-      borderColor: color, borderWidth: 2,
-      pointRadius: 0, cubicInterpolationMode: 'monotone', fill: false
-    }]},
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      animation: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: {
-          type: 'realtime',
-          realtime: {
-            duration: 60000,
-            refresh: 100,  // Chart refresh cepat
-            delay: 100,
-            frameRate: 30,
-            onRefresh: async (chart) => {
-              const j = await fetchLast();
-              if (!j || typeof j[key] !== 'number') return;
-              chart.data.datasets[0].data.push({ x: Date.now(), y: j[key] });
-            }
-          }
-        },
-        y: { min: yMin, max: yMax }
-      }
-    }
-  });
-}
-
-function updateTable(tableId, key){
-  const tableBody = document.querySelector(`#${tableId} tbody`);
-  const nowStr = new Date().toLocaleTimeString();
-  if (!_last || typeof _last[key] !== 'number') return;
-  tableBody.insertAdjacentHTML('afterbegin', `<tr><td>${nowStr}</td><td>${_last[key].toFixed(2)}</td></tr>`);
-  if (tableBody.children.length > 20) {
-    tableBody.removeChild(tableBody.lastElementChild);
-  }
-}
-
-// === Inisialisasi Chart ===
-const chartPH   = makeRealtimeChart('chartPH', 'ph',   '#4CAF50', 0, 14);
-const chartTurb = makeRealtimeChart('chartTurbidity', 'turb', '#2196F3', 0, 1000);
-const chartOks  = makeRealtimeChart('chartOksigen', 'oks', '#FF9800', 0, 20);
-const chartSuhu = makeRealtimeChart('chartSuhu', 'suhu', '#E91E63', 0, 100);
-
-// === Jadwal Update Tabel setiap 1 detik ===
-setInterval(() => {
-  updateTable('tablePH', 'ph');
-  updateTable('tableTurbidity', 'turb');
-  updateTable('tableOksigen', 'oks');
-  updateTable('tableSuhu', 'suhu');
-}, 1000);
-</script>
-
+    <div class="container">
+        <div class="page-header">
+            <h2>Dashboard Perairan IoT</h2>
+        </div>
+        <div class="main-content">
+            <hr>
+            <div class="card">
+                <div class="card-body" style="display: flex; justify-content: space-around; flex-wrap: wrap; gap: 20px;">
+                    <div style="text-align: center;">
+                        <button class="btn-primary relay-btn" onclick="sendButton('relay1')">Relay 1</button>
+                        <div id="status-relay1" class="relay-status">OFF</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <button class="btn-primary relay-btn" onclick="sendButton('relay2')">Relay 2</button>
+                        <div id="status-relay2" class="relay-status">OFF</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <button class="btn-primary relay-btn" onclick="sendButton('relay3')">Relay 3</button>
+                        <div id="status-relay3" class="relay-status">OFF</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <button class="btn-primary relay-btn" onclick="sendButton('relay4')">Relay 4</button>
+                        <div id="status-relay4" class="relay-status">OFF</div>
+                    </div>
+                </div>
+            </div>
+            <div class="grid-container" style="margin-top: 20px;">
+                <div class="card">
+                    <div class="card-body">
+                        <h3>pH</h3>
+                        <div class="wrap"><canvas id="chartPH"></canvas></div>
+                        <table id="tablePH" class="table">
+                            <thead><tr><th>Timestamp</th><th>pH</th></tr></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-body">
+                        <h3>Kekeruhan (NTU)</h3>
+                        <div class="wrap"><canvas id="chartTurbidity"></canvas></div>
+                        <table id="tableTurbidity" class="table">
+                            <thead><tr><th>Timestamp</th><th>NTU</th></tr></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-body">
+                        <h3>Kadar Oksigen (mg/L)</h3>
+                        <div class="wrap"><canvas id="chartOksigen"></canvas></div>
+                        <table id="tableOksigen" class="table">
+                            <thead><tr><th>Timestamp</th><th>mg/L</th></tr></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-body">
+                        <h3>Suhu (°C)</h3>
+                        <div class="wrap"><canvas id="chartSuhu"></canvas></div>
+                        <table id="tableSuhu" class="table">
+                            <thead><tr><th>Timestamp</th><th>°C</th></tr></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div> 
+    <script src="/script.js"></script> 
 </body>
 </html>
   )rawliteral";

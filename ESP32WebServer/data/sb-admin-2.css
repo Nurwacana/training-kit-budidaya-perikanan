@@ -1,0 +1,224 @@
+/* 1. Global Box Sizing & Root Variables */
+:root {
+    --primary-color: #4e73df;
+    --primary-hover: #2e59d9;
+    --light-bg: #f8f9fc;
+    --white: #ffffff;
+    --border-color: #e3e6f0;
+    --text-color: #858796;
+    --font-family: 'Nunito', sans-serif;
+}
+
+html {
+    box-sizing: border-box;
+}
+
+*,
+*:before,
+*:after {
+    box-sizing: inherit;
+}
+
+/* 2. Body & Typography */
+body {
+    font-family: var(--font-family);
+    background-color: var(--light-bg);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    font-weight: 600;
+    color: var(--primary-color);
+}
+
+h2 {
+    font-size: 2.8em;
+    margin-bottom: 0.5em;
+}
+
+
+hr {
+    border: 0;
+    height: 1px;
+    background-color: var(--border-color);
+    margin: 20px 0;
+    border-top: 2px solid #dddfeb;
+    margin-bottom: 1.5rem;
+}
+
+/* 3. Layout & Components (menggunakan variabel) */
+.container {
+    max-width: 1200px;
+    margin: 20px auto;
+    /* Tambahkan margin atas/bawah agar ada ruang untuk shadow */
+    padding: 0;
+    background-color: var(--white);
+    /* Pastikan container ini punya latar belakang putih */
+    border-radius: 0.5rem;
+    /* Beri sedikit sudut membulat */
+    box-shadow: 0 0.15rem 1.75rem 0 rgba(58, 59, 69, .15);
+    /* Ini adalah box-shadow yang dimaksud */
+}
+
+.page-header {
+    background-color: var(--primary-color);
+    padding: 1.5rem;
+    border-radius: 0.5rem 0.5rem 0 0; /* Sudut membulat hanya di atas */
+}
+
+.page-header h2 {
+    color: var(--white); /* Ubah warna teks judul menjadi putih */
+    margin: 0;           /* Hapus margin default dari h2 */
+    text-align: center;  /* Pastikan teks tetap di tengah */
+}
+
+.main-content {
+    padding: 1.5rem; /* Beri padding untuk konten agar tidak menempel di tepi */
+}
+
+.card {
+    background-color: var(--white);
+    border: 1px solid var(--border-color);
+    border-radius: 0.35rem;
+    box-shadow: 0 0.125rem 0.2rem rgba(0, 0, 0, 0.1);
+    margin-bottom: 20px;
+}
+
+.card-header {
+    background-color: var(--primary-color);
+    color: var(--white);
+    padding: 10px 15px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.card-body {
+    padding: 15px;
+}
+
+.table {
+    width: 100%;
+    margin-bottom: 1rem;
+    color: var(--text-color);
+}
+
+.table th,
+.table td {
+    padding: 0.75rem;
+    vertical-align: top;
+    border-top: 1px solid var(--border-color);
+}
+
+.table thead th {
+    vertical-align: bottom;
+    border-bottom: 2px solid var(--border-color);
+}
+
+.chart-container {
+    position: relative;
+    height: 40vh;
+    width: 80vw;
+}
+
+.footer {
+    background-color: var(--light-bg);
+    padding: 10px;
+    text-align: center;
+    color: var(--text-color);
+}
+
+.relay-buttons {
+    display: flex;
+    justify-content: space-around;
+    flex-wrap: wrap;
+    gap: 20px;
+}
+
+.btn-primary {
+    background-color: var(--primary-color);
+    border: none;
+    color: white;
+    padding: 10px 20px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: var(--font-family);
+    font-weight: 700;
+    transition: background-color 0.2s;
+}
+
+.btn-primary:hover {
+    background-color: #2e59d9;
+}
+
+.btn-primary.on {
+    background-color: var(--success-color);
+}
+
+.btn-primary.on:hover {
+    background-color: #17a673;
+}
+
+.relay-status {
+    margin-top: 8px;
+    font-weight: bold;
+    color: var(--text-light);
+}
+
+.grid-container {
+    display: flex;
+    /* Mengubah kontainer menjadi barisan */
+    flex-wrap: wrap;
+    /* Izinkan card pindah ke baris baru jika tidak cukup tempat */
+    gap: 20px;
+    /* Memberi jarak antar card */
+    margin-top: 20px;
+    /* Memberi jarak dari card relay di atasnya */
+}
+
+/* Penyesuaian pada .card DI DALAM .grid-container agar lebarnya fleksibel */
+.grid-container .card {
+    flex: 1 1 400px;
+    /* Setiap card mencoba lebar 400px, tapi bisa tumbuh/menyusut */
+    min-width: 350px;
+    /* Lebar minimum sebelum pindah baris */
+    margin-bottom: 0;
+    /* Hapus margin bawah default dari .card agar 'gap' yang mengatur */
+}
+
+/* TAMBAHKAN BLOK INI DI AKHIR CSS ANDA */
+@media (max-width: 768px) {
+    body {
+        padding: 10px;
+        /* Kurangi padding di layar kecil */
+    }
+
+    h2 {
+        font-size: 2.0em;
+        /* Perkecil judul utama */
+    }
+
+    .card h3 {
+        font-size: 1em;
+        /* Perkecil judul card */
+    }
+
+    /* .relay-btn {
+        font-size: 1.0em;
+        padding: 14px 28px;
+        margin-bottom: 8px;
+        width: 100px;
+    } */
+
+    table th,
+    table td {
+        padding: 4px;
+        /* Kurangi padding sel tabel */
+        font-size: 0.8em;
+        /* Perkecil font tabel */
+        word-break: break-all;
+        /* Cegah teks panjang merusak layout */
+    }
+}
