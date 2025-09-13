@@ -46,7 +46,6 @@ const uint16_t DO_Table[41] = {
 
 const long tempRequestInterval = 750; // Minta suhu setiap 750 ms
 
-
 const char *ssid = "Pertanian IPB utama";
 const char *password = "pertanian dan pangan";
 
@@ -284,25 +283,6 @@ void fastWrite(uint8_t pin, uint8_t value)
   }
 }
 
-void tes_relay(uint8_t p, unsigned long &last, bool &state)
-{
-  if (millis() - last >= 1000)
-  {
-    last = millis();
-
-    if (state == 0)
-    {
-      fastWrite(p, HIGH);
-      state = 1;
-    }
-    else
-    {
-      fastWrite(p, LOW);
-      state = 0;
-    }
-  }
-}
-
 void handlePhSensor()
 {
   const float calibration_value = 21.34 + 0.0f;
@@ -312,25 +292,37 @@ void handlePhSensor()
   phSensor.setFinal(phValue);
 }
 
+float map_float(float x, float in_min, float in_max, float out_min, float out_max) {
+    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
 void handleTurbiditySensor()
 {
   float voltage = turbiditySensor.getVar(Analog::VOLTAGE);
 
-  const float clear_point = 2.5;
-  const float dirty_point = 0.5;
+  const float clear_point = 1.53;
+  const float dirty_point = 0.0;
   const float NTU_MAX = 3000.0f;
 
   float a = -NTU_MAX / ((clear_point - dirty_point) *
                         (clear_point - dirty_point));
 
-  float ntu = a * (voltage - dirty_point) * (voltage - dirty_point) + NTU_MAX;
+  // float ntu = a * (voltage - dirty_point) * (voltage - dirty_point) + NTU_MAX;
+  // float voltage_adjusted = voltage * (5.0 / 3.3);
+  // float ntu = -1120.4*sq(voltage)+5742.3*voltage-4353.8;
+
+  if (voltage > clear_point)
+    voltage = clear_point;
+  else if (voltage < dirty_point)
+    voltage = dirty_point;
+
+  float ntu = map_float(voltage, 0, clear_point, 3000, 0);
 
   if (ntu < 0)
     ntu = 0;
   if (ntu > NTU_MAX)
     ntu = NTU_MAX;
-
-  // turbidityValue = 909.09 * (3.3 - voltage);
+  Serial.println(voltage);
 
   turbiditySensor.setFinal(ntu);
 }
@@ -395,7 +387,8 @@ void handleButton()
   relayState[idx] = !relayState[idx]; // toggle state
 
   int pin = PIN_RELAY_1 + idx; // PIN_RELAY_1,2,3,4 harus urut
-  digitalWrite(pin, relayState[idx] ? HIGH : LOW);
+  // digitalWrite(pin, relayState[idx] ? HIGH : LOW);
+  // fastWrite(pin, relayState[idx] ? LOW : HIGH);
 
   // Kirim status semua relay dalam JSON
   String json = "{";
@@ -533,15 +526,7 @@ void setup()
 
 void loop()
 {
-  Serial.println(phSensor.getVar(Analog::VOLTAGE));
-  static unsigned long last_relay_1 = 0;
-  static unsigned long last_relay_2 = 0;
-  static unsigned long last_relay_3 = 0;
-  static unsigned long last_relay_4 = 0;
-  static bool state_relay_1 = 0;
-  static bool state_relay_2 = 0;
-  static bool state_relay_3 = 0;
-  static bool state_relay_4 = 0;
+  // Serial.println(phSensor.getVar(Analog::VOLTAGE));
   static bool tempReady = false;
   static bool firstRun = false;
   if (!firstRun)
@@ -550,10 +535,6 @@ void loop()
     firstRun = true;
   }
 
-  // tes_relay(PIN_RELAY_1, last_relay_1, state_relay_1);
-  // tes_relay(PIN_RELAY_2, last_relay_2, state_relay_2);
-  // tes_relay(PIN_RELAY_3, last_relay_3, state_relay_3);
-  // tes_relay(PIN_RELAY_4, last_relay_4, state_relay_4);
   fastWrite(PIN_RELAY_1, relayState[0] ? LOW : HIGH);
   fastWrite(PIN_RELAY_2, relayState[1] ? LOW : HIGH);
   fastWrite(PIN_RELAY_3, relayState[2] ? LOW : HIGH);
