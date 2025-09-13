@@ -17,6 +17,7 @@
 // #define GPIO_OUT_W1TS_REG 0x3FF44008
 // #define GPIO_OUT_W1TC_REG 0x3FF4400C
 
+#define MODE_WIFI_OR_AP "ap" // "wifi" atau "ap"
 #define TWO_POINT_CALIBRATION 0
 // Single point calibration needs to be filled CAL1_V and CAL1_T
 #define CAL1_V (1600) // mv
@@ -46,9 +47,11 @@ const uint16_t DO_Table[41] = {
 
 const long tempRequestInterval = 750; // Minta suhu setiap 750 ms
 
+// jika mode wifi
 const char *ssid = "Pertanian IPB utama";
 const char *password = "pertanian dan pangan";
 
+// jika mode AP
 const char *ap_ssid = "Trainer_Akuaponik";
 const char *ap_password = "12345678";
 
@@ -322,7 +325,8 @@ void handleTurbiditySensor()
     ntu = 0;
   if (ntu > NTU_MAX)
     ntu = NTU_MAX;
-  Serial.println(voltage);
+
+  // Serial.println(voltage);
 
   turbiditySensor.setFinal(ntu);
 }
@@ -464,15 +468,27 @@ void modeAP()
   delay(2000);
 }
 
+void hostingStart()
+{
+  if (MODE_WIFI_OR_AP == "wifi")
+  {
+    modeWifi();
+  }
+  else
+  {
+    modeAP();
+  }
+}
+
 void setup()
 {
+  // ===== User Initialization =====
   Serial.println(analogRead(PIN_PH));
   Serial.begin(115200);
   lcd.init();
   lcd.backlight();
 
-  // modeWifi();
-  modeAP();
+  hostingStart();
 
   if (!SPIFFS.begin(true))
   {
