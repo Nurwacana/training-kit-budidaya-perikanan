@@ -2,9 +2,9 @@
 
 Proyek ini menyediakan solusi lengkap untuk memantau kualitas air menggunakan ESP32. Alat ini mengukur pH, kekeruhan, oksigen terlarut, dan suhu, lalu menampilkannya secara *real-time* pada dasbor web. Proyek ini juga memungkinkan kontrol hingga empat relay melalui antarmuka web.
 
-![Tampilan Website](Tampilan Website.png)
+![Tampilan Website](tampilan-website.png)
 
-![Flowchart sistem](Flowchart sistem.jpg)
+![Flowchart Sistem](flowchart-sistem.jpg)
 
 -----
 
