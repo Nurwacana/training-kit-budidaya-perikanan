@@ -17,8 +17,8 @@
 // #define GPIO_OUT_W1TS_REG 0x3FF44008
 // #define GPIO_OUT_W1TC_REG 0x3FF4400C
 
-#define MODE_WIFI_OR_AP "ap" // "wifi" atau "ap"
-#define TWO_POINT_CALIBRATION 0
+#define MODE_STA_OR_AP "ap" // "sta" atau "ap"
+#define TWO_POINT_CALIBRATION 0 // 0 = single point, 1 = two point
 // Single point calibration needs to be filled CAL1_V and CAL1_T
 #define CAL1_V (1600) // mv
 #define CAL1_T (25)   // ℃
@@ -47,7 +47,7 @@ const uint16_t DO_Table[41] = {
 
 const long tempRequestInterval = 750; // Minta suhu setiap 750 ms
 
-// jika mode wifi
+// jika mode STA
 const char *ssid = "Pertanian IPB utama";
 const char *password = "pertanian dan pangan";
 
@@ -419,9 +419,9 @@ void handleRelayStatus()
   server.send(200, "application/json", json);
 }
 
-void modeWifi()
+void modeSTA()
 {
-  Serial.println("Inisialisasi WiFi...");
+  Serial.println("Inisialisasi STA...");
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Inisialisasi");
@@ -470,9 +470,9 @@ void modeAP()
 
 void hostingStart()
 {
-  if (MODE_WIFI_OR_AP == "wifi")
+  if (MODE_STA_OR_AP == "sta")
   {
-    modeWifi();
+    modeSTA();
   }
   else
   {
