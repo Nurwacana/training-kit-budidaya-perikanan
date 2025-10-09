@@ -1,21 +1,114 @@
 <!DOCTYPE html>
 <html lang="id">
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>IoT Perairan Dashboard</title>
-    <link rel="stylesheet" href="/sb-admin-2.css">
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+<title>Dashboard Perairan IoT</title>
+<link rel="stylesheet" href="/sb-admin-2.css">
 
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-    <script src="https://cdn.jsdelivr.net/npm/luxon@3"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-streaming@2"></script>
+<!-- Chart.js + Streaming plugin -->
+<script src="/chart.js"></script>
+<script src="/luxon.js"></script>
+<script src="/chartjs-adapter-luxon.js"></script>
+<script src="/chartjs-plugin-streaming.js"></script>
+
+<style>
+  body { font-family: Arial, sans-serif; background:#f5f5f5; margin:0; padding:20px; }
+  h2 { text-align:center; margin-bottom:20px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:15px; }
+  .card { background:#fff; border-radius:12px; padding:15px; box-shadow:0 4px 12px rgba(0,0,0,.1); display:flex; flex-direction:column; }
+  .card h3 { margin:0 0 10px; font-size:1.05em; color:#333; }
+  .wrap { position:relative; width:100%; height:220px; }
+  canvas { position:absolute; inset:0; }
+  table { width:100%; border-collapse:collapse; font-size:0.85em; margin-top:10px; }
+  table th, table td { border:1px solid #ddd; padding:4px 6px; text-align:center; }
+  table th { background:#f0f0f0; }
+  tbody { display:block; max-height:160px; overflow-y:auto; } /* Scroll tabel */
+  thead, tbody tr { display:table; width:100%; table-layout:fixed; }
+</style>
 </head>
 <body>
-    <h2>📊 IoT Perairan Dashboard</h2>
-    <div class="grid">
-      </div>
-
-    <script src="/script.js"></script>
+    <div class="container">
+        <div class="page-header">
+            <h2>Dashboard Perairan IoT</h2>
+        </div>
+        <div class="main-content">
+            <hr>
+            <div class="card">
+                <div class="card-body" style="display: flex; justify-content: space-around; flex-wrap: wrap; gap: 20px;">
+                    <div style="text-align: center;">
+                        <button class="btn-primary relay-btn" onclick="sendButton('relay1')">Relay 1</button>
+                        <div id="status-relay1" class="relay-status">OFF</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <button class="btn-primary relay-btn" onclick="sendButton('relay2')">Relay 2</button>
+                        <div id="status-relay2" class="relay-status">OFF</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <button class="btn-primary relay-btn" onclick="sendButton('relay3')">Relay 3</button>
+                        <div id="status-relay3" class="relay-status">OFF</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <button class="btn-primary relay-btn" onclick="sendButton('relay4')">Relay 4</button>
+                        <div id="status-relay4" class="relay-status">OFF</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <button class="btn-primary relay-btn" onclick="sendButton('relay5')">Relay 5</button>
+                        <div id="status-relay5" class="relay-status">OFF</div>
+                    </div>
+                </div>
+                <div style="display:flex; justify-content:center; gap:20px; align-items:center; padding:12px;">
+                    <div>
+                        Mode: <button id="mode-toggle" class="btn-primary" onclick="toggleMode()">Auto</button>
+                        <div style="font-size:0.9em; color:#555; text-align:center;">(klik untuk ganti)</div>
+                    </div>
+                    <!-- Connection status removed -->
+                </div>
+            </div>
+            <div class="grid-container" style="margin-top: 20px;">
+                <div class="card">
+                    <div class="card-body">
+                        <h3>pH</h3>
+                        <div class="wrap"><canvas id="chartPH"></canvas></div>
+                        <table id="tablePH" class="table">
+                            <thead><tr><th>Timestamp</th><th>pH</th></tr></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-body">
+                        <h3>Kekeruhan (NTU)</h3>
+                        <div class="wrap"><canvas id="chartTurbidity"></canvas></div>
+                        <table id="tableTurbidity" class="table">
+                            <thead><tr><th>Timestamp</th><th>NTU</th></tr></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-body">
+                        <h3>Kadar Oksigen (mg/L)</h3>
+                        <div class="wrap"><canvas id="chartOksigen"></canvas></div>
+                        <table id="tableOksigen" class="table">
+                            <thead><tr><th>Timestamp</th><th>mg/L</th></tr></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-body">
+                        <h3>Suhu (°C)</h3>
+                        <div class="wrap"><canvas id="chartSuhu"></canvas></div>
+                        <table id="tableSuhu" class="table">
+                            <thead><tr><th>Timestamp</th><th>°C</th></tr></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div> 
+    <script src="/script.js"></script> 
 </body>
 </html>

@@ -11,6 +11,7 @@
 #include <Arduino.h>
 #include <FS.h>
 #include <SPIFFS.h>
+#include <WebSocketsServer.h>
 
 // ===== User defined constants =====
 // sudah terdefinisi di header esp32-hal-gpio.h
@@ -37,6 +38,7 @@
 #define PIN_RELAY_2 27
 #define PIN_RELAY_3 26
 #define PIN_RELAY_4 25
+#define PIN_RELAY_5 19
 
 // Lookup table for Dissolved Oxygen (DO) in mg/L at different temperatures (0-40°C)
 const uint16_t DO_Table[41] = {
@@ -243,13 +245,22 @@ unsigned long lastUpdate_sensor = 0;
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 WebServer server(80);
+WebSocketsServer webSocket = WebSocketsServer(81); // WebSocket di port 81
 
 DataList sensorData(maxDataPoints);
 
-bool relayState[4] = {false, false, false, false};
+bool relayState[5] = {false, false, false, false, false};
+bool autoMode = true; // true = otomatis, false = manual
+
+// new globals for client connection tracking
+unsigned long lastClientPing = 0;
+const unsigned long clientTimeoutMs = 6000; // jika tidak ada ping dalam 6s -> dianggap tidak connected
+
 
 // ===== User defined functions =====
 // ===== Web =====
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length);
+
 void handleRoot();
 void handleData();
 void handleLast();
@@ -364,59 +375,110 @@ void handleOksigenSensor()
   oksigenSensor.setFinal(o2Value);
 }
 
-void handleButton()
-{
-  if (!server.hasArg("relay"))
-  {
-    server.send(400, "application/json", "{\"error\":\"Missing relay parameter\"}");
+// helper: set relay state and immediately update pin (uses fastWrite)
+void setRelay(int idx, bool state) {
+  if (idx < 0 || idx > 4) return; // Ubah dari 3 ke 4 untuk indeks maksimum
+  relayState[idx] = state;
+  int pin;
+  // Tentukan pin berdasarkan indeks
+  switch(idx) {
+    case 0: pin = PIN_RELAY_1; break;
+    case 1: pin = PIN_RELAY_2; break;
+    case 2: pin = PIN_RELAY_3; break;
+    case 3: pin = PIN_RELAY_4; break;
+    case 4: pin = PIN_RELAY_5; break;
+    default: return;
+  }
+  fastWrite(pin, relayState[idx] ? LOW : HIGH);
+}
+
+void handleButton() {
+  if (!server.hasArg("relay") || !server.hasArg("state")) {
+    server.send(400, "application/json", "{\"error\":\"Missing relay or state parameter\"}");
     return;
   }
-  String relay = server.arg("relay");
-  int idx = -1;
-  if (relay == "relay1")
-    idx = 0;
-  else if (relay == "relay2")
-    idx = 1;
-  else if (relay == "relay3")
-    idx = 2;
-  else if (relay == "relay4")
-    idx = 3;
+  // Jika mode otomatis aktif, tolak perubahan manual
+  if (autoMode) {
+    server.send(403, "application/json", "{\"error\":\"Device in automatic mode\"}");
+    return;
+  }
 
-  if (idx == -1)
-  {
+  String relay = server.arg("relay");
+  String state = server.arg("state"); // expected "on" or "off"
+  int idx = -1;
+  if (relay == "relay1") idx = 0;
+  else if (relay == "relay2") idx = 1;
+  else if (relay == "relay3") idx = 2;
+  else if (relay == "relay4") idx = 3;
+  else if (relay == "relay5") idx = 4; // Tambahkan ini
+  
+  if (idx == -1) {
     server.send(400, "application/json", "{\"error\":\"Invalid relay\"}");
     return;
   }
 
-  relayState[idx] = !relayState[idx]; // toggle state
+  // server is authoritative: apply requested state
+  if (state == "on") setRelay(idx, true);
+  else if (state == "off") setRelay(idx, false);
+  else {
+    server.send(400, "application/json", "{\"error\":\"Invalid state\"}");
+    return;
+  }
 
-  int pin = PIN_RELAY_1 + idx; // PIN_RELAY_1,2,3,4 harus urut
-  // digitalWrite(pin, relayState[idx] ? HIGH : LOW);
-  // fastWrite(pin, relayState[idx] ? LOW : HIGH);
-
-  // Kirim status semua relay dalam JSON
+  // Kirim status semua relay sebagai JSON (tambahkan mode + koneksi nanti via handleRelayStatus)
   String json = "{";
-  for (int i = 0; i < 4; i++)
-  {
-    json += "\"relay" + String(i + 1) + "\":" + (relayState[i] ? "true" : "false");
-    if (i < 3)
-      json += ",";
+  for (int i = 0; i < 5; i++) { // Ubah dari 4 ke 5
+    json += "\"relay" + String(i+1) + "\":" + (relayState[i] ? "true" : "false");
+    if (i < 4) json += ","; // Ubah dari 3 ke 4
   }
   json += "}";
   server.send(200, "application/json", json);
 }
 
-void handleRelayStatus()
-{
-  String json = "{";
-  for (int i = 0; i < 4; i++)
-  {
-    json += "\"relay" + String(i + 1) + "\":" + (relayState[i] ? "true" : "false");
-    if (i < 3)
-      json += ",";
+
+// contoh otomatis: ubah relay berdasarkan kondisi sensor / jadwal
+void autoRelayLogic() {
+  static unsigned long lastAutoMillis = 0;
+  const unsigned long interval = 10; // cek tiap 10 detik
+  if (millis() - lastAutoMillis < interval) return;
+  lastAutoMillis = millis();
+
+  bool stateChanged = false;
+  bool oldStates[4];
+  // Simpan status relay sebelumnya
+  for(int i = 0; i < 4; i++) {
+    oldStates[i] = relayState[i];
   }
-  json += "}";
-  server.send(200, "application/json", json);
+
+  // Contoh 1: jika suhu > 30C -> nyalakan relay1, else matikan
+  if (suhuValue < 20.0) setRelay(4, true);
+  else setRelay(0, false);
+
+  // Contoh 2: jika potensiometer (percent) > 50 -> nyalakan relay2
+  float potPercent = potensiometer.getVar(Analog::PERCENT);
+  if (potPercent > 50.0) setRelay(1, true);
+  else setRelay(1, false);
+
+  // Cek apakah ada perubahan status
+  for(int i = 0; i < 4; i++) {
+    if(oldStates[i] != relayState[i]) {
+      stateChanged = true;
+      break;
+    }
+  }
+
+  // Jika ada perubahan, kirim update ke semua client
+  if(stateChanged) {
+    String json = "{";
+    for(int i = 0; i < 4; i++) {
+      json += "\"relay" + String(i+1) + "\":" + (relayState[i] ? "true" : "false");
+      if(i < 3) json += ",";
+    }
+    json += "}";
+    webSocket.broadcastTXT(json);
+  }
+
+  // Tambahkan logika lain sesuai kebutuhan...
 }
 
 void modeSTA()
@@ -480,6 +542,9 @@ void hostingStart()
   }
 }
 
+void handleModeGet();
+void handleModePost();
+
 void setup()
 {
   // ===== User Initialization =====
@@ -513,10 +578,15 @@ void setup()
   server.on("/script.js", handleScriptJs);
   server.on("/button", HTTP_POST, handleButton);
   server.on("/relay-status", HTTP_GET, handleRelayStatus);
+  server.on("/mode", HTTP_GET, handleModeGet);
+  server.on("/mode", HTTP_POST, handleModePost);
   server.on("/", handleRoot);
   server.on("/data", handleData); // historis (opsional)
   server.on("/last", handleLast); // realtime
   server.begin();
+
+  webSocket.begin();
+  webSocket.onEvent(webSocketEvent);
 
   Wire.begin();
   sensorSuhu.begin();
@@ -530,11 +600,13 @@ void setup()
   pinMode(PIN_RELAY_2, OUTPUT);
   pinMode(PIN_RELAY_3, OUTPUT);
   pinMode(PIN_RELAY_4, OUTPUT);
+  pinMode(PIN_RELAY_5, OUTPUT); // Tambahkan ini
 
   fastWrite(PIN_RELAY_1, HIGH);
   fastWrite(PIN_RELAY_2, HIGH);
   fastWrite(PIN_RELAY_3, HIGH);
   fastWrite(PIN_RELAY_4, HIGH);
+  fastWrite(PIN_RELAY_5, HIGH); // Tambahkan ini
 
   sensorSuhu.requestTemperatures();
   suhuValue = sensorSuhu.getTempCByIndex(0);
@@ -555,8 +627,18 @@ void loop()
   fastWrite(PIN_RELAY_2, relayState[1] ? LOW : HIGH);
   fastWrite(PIN_RELAY_3, relayState[2] ? LOW : HIGH);
   fastWrite(PIN_RELAY_4, relayState[3] ? LOW : HIGH);
+  fastWrite(PIN_RELAY_5, relayState[4] ? LOW : HIGH); // Tambahkan ini
+
+  // printf(relayState[4] ? "0" : "1");
+  // printf("\n");
+  
+  // Panggil auto logic hanya saat autoMode = true
+  if (autoMode) {
+    autoRelayLogic();
+  }
 
   server.handleClient();
+  webSocket.loop();
   phSensor.update();
   turbiditySensor.update();
   oksigenSensor.update();
@@ -750,113 +832,100 @@ void handleStreamingPluginJs()
   file.close();
 }
 
+
+/// Handler untuk memberikan status semua relay dalam JSON (tambahkan mode + koneksi)
+void handleRelayStatus() {
+  String json = "{";
+  for (int i = 0; i < 4; ++i) {
+    json += "\"relay" + String(i + 1) + "\":" + (relayState[i] ? "true" : "false");
+    if (i < 3) json += ",";
+  }
+  json += ",\"mode\":\"";
+  json += (autoMode ? "auto" : "manual");
+  json += "\"}";
+  server.send(200, "application/json", json);
+}
+
+// Handler untuk mendapatkan mode
+void handleModeGet() {
+  String json = "{";
+  json += "\"mode\":\"";
+  json += (autoMode ? "auto" : "manual");
+  json += "\"}";
+  server.send(200, "application/json", json);
+}
+
+// Handler untuk mengubah mode (POST ?mode=auto|manual)
+void handleModePost() {
+  if (!server.hasArg("mode")) {
+    server.send(400, "application/json", "{\"error\":\"Missing mode parameter\"}");
+    return;
+  }
+  String mode = server.arg("mode");
+  if (mode == "auto") autoMode = true;
+  else if (mode == "manual") autoMode = false;
+  else {
+    server.send(400, "application/json", "{\"error\":\"Invalid mode\"}");
+    return;
+  }
+  // kembalikan state saat ini
+  String json = "{";
+  json += "\"mode\":\"";
+  json += (autoMode ? "auto" : "manual");
+  json += "\"}";
+  server.send(200, "application/json", json);
+}
+
 void handleRoot()
 {
-  String htmlString = R"rawliteral(
-<!DOCTYPE html>
-<html lang="id">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-<title>Dashboard Perairan IoT</title>
-<link rel="stylesheet" href="/sb-admin-2.css">
+  // Baca file /index.html dari SPIFFS dan stream ke client
+  File file = SPIFFS.open("/index.html", "r");
+  if (!file)
+  {
+    server.send(500, "text/plain", "index.html not found");
+    return;
+  }
+  server.streamFile(file, "text/html; charset=utf-8");
+  file.close();
+}
 
-<!-- Chart.js + Streaming plugin -->
-<script src="/chart.js"></script>
-<script src="/luxon.js"></script>
-<script src="/chartjs-adapter-luxon.js"></script>
-<script src="/chartjs-plugin-streaming.js"></script>
-
-<style>
-  body { font-family: Arial, sans-serif; background:#f5f5f5; margin:0; padding:20px; }
-  h2 { text-align:center; margin-bottom:20px; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:15px; }
-  .card { background:#fff; border-radius:12px; padding:15px; box-shadow:0 4px 12px rgba(0,0,0,.1); display:flex; flex-direction:column; }
-  .card h3 { margin:0 0 10px; font-size:1.05em; color:#333; }
-  .wrap { position:relative; width:100%; height:220px; }
-  canvas { position:absolute; inset:0; }
-  table { width:100%; border-collapse:collapse; font-size:0.85em; margin-top:10px; }
-  table th, table td { border:1px solid #ddd; padding:4px 6px; text-align:center; }
-  table th { background:#f0f0f0; }
-  tbody { display:block; max-height:160px; overflow-y:auto; } /* Scroll tabel */
-  thead, tbody tr { display:table; width:100%; table-layout:fixed; }
-</style>
-</head>
-<body>
-    <div class="container">
-        <div class="page-header">
-            <h2>Dashboard Perairan IoT</h2>
-        </div>
-        <div class="main-content">
-            <hr>
-            <div class="card">
-                <div class="card-body" style="display: flex; justify-content: space-around; flex-wrap: wrap; gap: 20px;">
-                    <div style="text-align: center;">
-                        <button class="btn-primary relay-btn" onclick="sendButton('relay1')">Relay 1</button>
-                        <div id="status-relay1" class="relay-status">OFF</div>
-                    </div>
-                    <div style="text-align: center;">
-                        <button class="btn-primary relay-btn" onclick="sendButton('relay2')">Relay 2</button>
-                        <div id="status-relay2" class="relay-status">OFF</div>
-                    </div>
-                    <div style="text-align: center;">
-                        <button class="btn-primary relay-btn" onclick="sendButton('relay3')">Relay 3</button>
-                        <div id="status-relay3" class="relay-status">OFF</div>
-                    </div>
-                    <div style="text-align: center;">
-                        <button class="btn-primary relay-btn" onclick="sendButton('relay4')">Relay 4</button>
-                        <div id="status-relay4" class="relay-status">OFF</div>
-                    </div>
-                </div>
-            </div>
-            <div class="grid-container" style="margin-top: 20px;">
-                <div class="card">
-                    <div class="card-body">
-                        <h3>pH</h3>
-                        <div class="wrap"><canvas id="chartPH"></canvas></div>
-                        <table id="tablePH" class="table">
-                            <thead><tr><th>Timestamp</th><th>pH</th></tr></thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                </div>
-                <div class="card">
-                    <div class="card-body">
-                        <h3>Kekeruhan (NTU)</h3>
-                        <div class="wrap"><canvas id="chartTurbidity"></canvas></div>
-                        <table id="tableTurbidity" class="table">
-                            <thead><tr><th>Timestamp</th><th>NTU</th></tr></thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                </div>
-                <div class="card">
-                    <div class="card-body">
-                        <h3>Kadar Oksigen (mg/L)</h3>
-                        <div class="wrap"><canvas id="chartOksigen"></canvas></div>
-                        <table id="tableOksigen" class="table">
-                            <thead><tr><th>Timestamp</th><th>mg/L</th></tr></thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                </div>
-                <div class="card">
-                    <div class="card-body">
-                        <h3>Suhu (°C)</h3>
-                        <div class="wrap"><canvas id="chartSuhu"></canvas></div>
-                        <table id="tableSuhu" class="table">
-                            <thead><tr><th>Timestamp</th><th>°C</th></tr></thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div> 
-    <script src="/script.js"></script> 
-</body>
-</html>
-  )rawliteral";
-
-  server.send(200, "text/html; charset=utf-8", htmlString);
+// Tambahkan setelah deklarasi WebServer
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+    switch(type) {
+        case WStype_CONNECTED:
+            {
+                Serial.printf("[%u] Connected!\n", num);
+                // Kirim status awal ke client yang baru terkoneksi
+                String status = "{";
+                for(int i = 0; i < 5; i++) { // Ubah dari 4 ke 5
+                    status += "\"relay" + String(i+1) + "\":" + (relayState[i] ? "true" : "false");
+                    if(i < 4) status += ","; // Ubah dari 3 ke 4
+                }
+                status += ",\"mode\":\"" + String(autoMode ? "auto" : "manual") + "\"}";
+                webSocket.sendTXT(num, status);
+            }
+            break;
+        case WStype_TEXT:
+            {
+                String text = String((char*)payload);
+                if(text.startsWith("relay")) {
+                    int relay = text[5] - '1'; // relay1 -> 0, relay2 -> 1, etc.
+                    bool state = text.endsWith("on");
+                    if(relay >= 0 && relay < 5 && !autoMode) { // Ubah dari 4 ke 5
+                        setRelay(relay, state);
+                        String status = "{\"relay" + String(relay+1) + "\":" + (state ? "true" : "false") + "}";
+                        webSocket.broadcastTXT(status);
+                    }
+                }
+                else if(text == "mode_auto") {
+                    autoMode = true;
+                    webSocket.broadcastTXT("{\"mode\":\"auto\"}");
+                }
+                else if(text == "mode_manual") {
+                    autoMode = false;
+                    webSocket.broadcastTXT("{\"mode\":\"manual\"}");
+                }
+            }
+            break;
+    }
 }
