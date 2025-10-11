@@ -21,8 +21,8 @@
 #define MODE_STA_OR_AP "ap" // "sta" atau "ap"
 #define TWO_POINT_CALIBRATION 1 // 0 = single point, 1 = two point
 // Single point calibration needs to be filled CAL1_V and CAL1_T
-#define CAL1_V (920) // mv
-#define CAL1_T (29)   // ℃
+#define CAL1_V (1100) // mv
+#define CAL1_T (34)   // ℃
 // Two-point calibration needs to be filled CAL2_V and CAL2_T
 // CAL1 High temperature point, CAL2 Low temperature point
 #define CAL2_V (650) // mv
