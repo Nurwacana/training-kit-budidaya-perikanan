@@ -21,8 +21,8 @@
 #define MODE_STA_OR_AP "ap" // "sta" atau "ap"
 #define TWO_POINT_CALIBRATION 0 // 0 = single point, 1 = two point
 // Single point calibration needs to be filled CAL1_V and CAL1_T
-#define CAL1_V (1600) // mv
-#define CAL1_T (25)   // ℃
+#define CAL1_V (920) // mv
+#define CAL1_T (29)   // ℃
 // Two-point calibration needs to be filled CAL2_V and CAL2_T
 // CAL1 High temperature point, CAL2 Low temperature point
 #define CAL2_V (1300) // mv
@@ -362,6 +362,7 @@ void handleOksigenSensor()
 
   uint8_t currentTemperature = (uint8_t)round(suhuValue);
   // Serial.println(analogRead(PIN_OKSIGEN));
+  Serial.println(voltage_mv);
   int tes = analogRead(PIN_OKSIGEN);
   static int anjay = 0;
   if (tes > 0)
@@ -370,7 +371,7 @@ void handleOksigenSensor()
   }
 
   // 4. Panggil fungsi readDO() untuk menghitung nilai Dissolved Oxygen (mg/L).
-  float o2Value = readDO(voltage_mv, currentTemperature);
+  float o2Value = readDO(voltage_mv, currentTemperature) / 1000.0f; // Konversi ke mg/L
 
   oksigenSensor.setFinal(o2Value);
 }
@@ -628,8 +629,9 @@ void loop()
   fastWrite(PIN_RELAY_3, relayState[2] ? LOW : HIGH);
   fastWrite(PIN_RELAY_4, relayState[3] ? LOW : HIGH);
   fastWrite(PIN_RELAY_5, relayState[4] ? LOW : HIGH); // Tambahkan ini
+  // fastWrite(PIN_RELAY_5, HIGH);
 
-  // printf(relayState[4] ? "0" : "1");
+  printf(relayState[4] ? "0" : "1");
   // printf("\n");
   
   // Panggil auto logic hanya saat autoMode = true
