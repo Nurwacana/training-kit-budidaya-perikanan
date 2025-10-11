@@ -87,7 +87,7 @@ function updateTable(tableId, key, value) {
 
 // === Inisialisasi Chart ===
 const chartPH = makeRealtimeChart('chartPH', 'ph', '#4CAF50', 0, 14);
-const chartTurb = makeRealtimeChart('chartTurbidity', 'turb', '#2196F3', 0, 3000);
+const chartTurb = makeRealtimeChart('chartTurbidity', 'turb', '#2196F3', 0, 100);
 const chartOks = makeRealtimeChart('chartOksigen', 'oks', '#FF9800', 0, 20);
 const chartSuhu = makeRealtimeChart('chartSuhu', 'suhu', '#E91E63', 0, 50);
 

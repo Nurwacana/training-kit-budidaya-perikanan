@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
@@ -8,7 +9,6 @@
 #include <LiquidCrystal_I2C.h>
 #include <Wire.h>
 #include <math.h>
-#include <Arduino.h>
 #include <FS.h>
 #include <SPIFFS.h>
 #include <WebSocketsServer.h>
@@ -19,14 +19,14 @@
 // #define GPIO_OUT_W1TC_REG 0x3FF4400C
 
 #define MODE_STA_OR_AP "ap" // "sta" atau "ap"
-#define TWO_POINT_CALIBRATION 0 // 0 = single point, 1 = two point
+#define TWO_POINT_CALIBRATION 1 // 0 = single point, 1 = two point
 // Single point calibration needs to be filled CAL1_V and CAL1_T
-#define CAL1_V (1600) // mv
-#define CAL1_T (25)   // ℃
+#define CAL1_V (1100) // mv
+#define CAL1_T (34)   // ℃
 // Two-point calibration needs to be filled CAL2_V and CAL2_T
 // CAL1 High temperature point, CAL2 Low temperature point
-#define CAL2_V (1300) // mv
-#define CAL2_T (15)   // ℃
+#define CAL2_V (650) // mv
+#define CAL2_T (23)   // ℃
 
 // Pin definitions
 #define PIN_PH 32
@@ -47,7 +47,7 @@ const uint16_t DO_Table[41] = {
     9080, 8900, 8730, 8570, 8410, 8250, 8110, 7960, 7820, 7690,
     7560, 7430, 7300, 7180, 7070, 6950, 6840, 6730, 6630, 6530, 6410};
 
-const long tempRequestInterval = 750; // Minta suhu setiap 750 ms
+const long tempRequestInterval = 800; // Minta suhu setiap 750 ms
 
 // jika mode STA
 const char *ssid = "Pertanian IPB utama";
@@ -88,8 +88,10 @@ public:
     {
       smoothedRaw = (alpha * (float)analogRead(pin)) + ((1 - alpha) * smoothedRaw);
     }
+    
     voltage = (round(smoothedRaw) / 4095.0f) * 3.3f;
     percent = (round(smoothedRaw) / 4095.0f) * 100.0f;
+    // percent = smoothedRaw;
   }
   /// @brief mendapatkan pin analog
   uint8_t getPin() { return pin; }
@@ -315,8 +317,11 @@ void handleTurbiditySensor()
   float voltage = turbiditySensor.getVar(Analog::VOLTAGE);
 
   const float clear_point = 1.53;
-  const float dirty_point = 0.0;
-  const float NTU_MAX = 3000.0f;
+  const float dirty_point = 0.8;
+  const float NTU_MAX = 100.0f;
+
+  const float adc_max = 1860;
+  const float adc_min = 960;
 
   float a = -NTU_MAX / ((clear_point - dirty_point) *
                         (clear_point - dirty_point));
@@ -330,14 +335,19 @@ void handleTurbiditySensor()
   else if (voltage < dirty_point)
     voltage = dirty_point;
 
-  float ntu = map_float(voltage, 0, clear_point, 3000, 0);
+  // float ntu = map_float(voltage, 0, clear_point, 3000, 0);
+  float ntu = adc_min + ((voltage - dirty_point)/(clear_point -dirty_point)*(adc_max-adc_min));
 
-  if (ntu < 0)
-    ntu = 0;
-  if (ntu > NTU_MAX)
-    ntu = NTU_MAX;
+  // if (ntu < 0)
+  //   ntu = 0;
+  // if (ntu > NTU_MAX)
+  //   ntu = NTU_MAX; 
+  ntu = map_float(ntu, adc_min, adc_max, 100, 0);
 
-  // Serial.println(voltage);
+  // int adcturbidity = turbiditySensor.getVar(Analog::PERCENT);
+  // Serial.print(voltage);
+  // Serial.print(" ");
+  // Serial.println(adcturbidity);
 
   turbiditySensor.setFinal(ntu);
 }
@@ -368,9 +378,10 @@ void handleOksigenSensor()
   {
     // Serial.println(tes);
   }
+  // Serial.println(voltage_mv);
 
   // 4. Panggil fungsi readDO() untuk menghitung nilai Dissolved Oxygen (mg/L).
-  float o2Value = readDO(voltage_mv, currentTemperature);
+  float o2Value = readDO(voltage_mv, currentTemperature) / 1000.0f;
 
   oksigenSensor.setFinal(o2Value);
 }
@@ -427,9 +438,9 @@ void handleButton() {
 
   // Kirim status semua relay sebagai JSON (tambahkan mode + koneksi nanti via handleRelayStatus)
   String json = "{";
-  for (int i = 0; i < 5; i++) { // Ubah dari 4 ke 5
+  for (int i = 0; i < 5; i++) {
     json += "\"relay" + String(i+1) + "\":" + (relayState[i] ? "true" : "false");
-    if (i < 4) json += ","; // Ubah dari 3 ke 4
+    if (i < 4) json += ","; 
   }
   json += "}";
   server.send(200, "application/json", json);
@@ -477,8 +488,6 @@ void autoRelayLogic() {
     json += "}";
     webSocket.broadcastTXT(json);
   }
-
-  // Tambahkan logika lain sesuai kebutuhan...
 }
 
 void modeSTA()
@@ -600,13 +609,13 @@ void setup()
   pinMode(PIN_RELAY_2, OUTPUT);
   pinMode(PIN_RELAY_3, OUTPUT);
   pinMode(PIN_RELAY_4, OUTPUT);
-  pinMode(PIN_RELAY_5, OUTPUT); // Tambahkan ini
+  pinMode(PIN_RELAY_5, OUTPUT);
 
   fastWrite(PIN_RELAY_1, HIGH);
   fastWrite(PIN_RELAY_2, HIGH);
   fastWrite(PIN_RELAY_3, HIGH);
   fastWrite(PIN_RELAY_4, HIGH);
-  fastWrite(PIN_RELAY_5, HIGH); // Tambahkan ini
+  fastWrite(PIN_RELAY_5, HIGH);
 
   sensorSuhu.requestTemperatures();
   suhuValue = sensorSuhu.getTempCByIndex(0);
@@ -627,7 +636,7 @@ void loop()
   fastWrite(PIN_RELAY_2, relayState[1] ? LOW : HIGH);
   fastWrite(PIN_RELAY_3, relayState[2] ? LOW : HIGH);
   fastWrite(PIN_RELAY_4, relayState[3] ? LOW : HIGH);
-  fastWrite(PIN_RELAY_5, relayState[4] ? LOW : HIGH); // Tambahkan ini
+  fastWrite(PIN_RELAY_5, relayState[4] ? LOW : HIGH);
 
   // printf(relayState[4] ? "0" : "1");
   // printf("\n");
@@ -709,7 +718,7 @@ void timerLcdI2c()
 
     // %-4.0f artinya: format float, lebar 4 karakter, 0 angka di belakang koma, rata kiri
     // %-3d%% artinya: format integer, lebar 3 karakter, rata kiri, diakhiri tanda %
-    sprintf(line2, "Tb:%-4.0f  P:%-3d%%", turb_val, pot_val);
+    sprintf(line2, "Tb:%-3.0f%%  P:%-3d%%", turb_val, pot_val);
 
     // Cetak ke LCD
     lcd.setCursor(0, 0);
