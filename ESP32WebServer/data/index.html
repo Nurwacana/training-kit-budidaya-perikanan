@@ -25,6 +25,14 @@
   table th { background:#f0f0f0; }
   tbody { display:block; max-height:160px; overflow-y:auto; } /* Scroll tabel */
   thead, tbody tr { display:table; width:100%; table-layout:fixed; }
+  .form-control { padding:8px; border:1px solid #ccc; border-radius:4px; width:80px; text-align:right; }
+  .input-group { display:flex; gap:10px; align-items:center; justify-content:center; margin-bottom:10px; }
+  .input-group label { margin:0; font-size:0.9em; color:#333; }
+  .btn-primary { background-color:#007bff; color:#fff; border:none; padding:10px 15px; border-radius:4px; cursor:pointer; }
+  .btn-primary:hover { background-color:#0056b3; }
+  .threshold-controls { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:20px; }
+  .threshold-group { background:#f9f9f9; padding:15px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.1); }
+  .threshold-group h4 { margin:0 0 10px; font-size:1em; color:#333; }
 </style>
 </head>
 <body>
@@ -37,23 +45,23 @@
             <div class="card">
                 <div class="card-body" style="display: flex; justify-content: space-around; flex-wrap: wrap; gap: 20px;">
                     <div style="text-align: center;">
-                        <button class="btn-primary relay-btn" onclick="sendButton('relay1')">Relay 1</button>
+                        <button class="btn-primary relay-btn" onclick="sendButton('relay1')">Ph naik</button>
                         <div id="status-relay1" class="relay-status">OFF</div>
                     </div>
                     <div style="text-align: center;">
-                        <button class="btn-primary relay-btn" onclick="sendButton('relay2')">Relay 2</button>
+                        <button class="btn-primary relay-btn" onclick="sendButton('relay2')">Ph turun</button>
                         <div id="status-relay2" class="relay-status">OFF</div>
                     </div>
                     <div style="text-align: center;">
-                        <button class="btn-primary relay-btn" onclick="sendButton('relay3')">Relay 3</button>
+                        <button class="btn-primary relay-btn" onclick="sendButton('relay3')">Filter air</button>
                         <div id="status-relay3" class="relay-status">OFF</div>
                     </div>
                     <div style="text-align: center;">
-                        <button class="btn-primary relay-btn" onclick="sendButton('relay4')">Relay 4</button>
+                        <button class="btn-primary relay-btn" onclick="sendButton('relay4')">Aerator</button>
                         <div id="status-relay4" class="relay-status">OFF</div>
                     </div>
                     <div style="text-align: center;">
-                        <button class="btn-primary relay-btn" onclick="sendButton('relay5')">Relay 5</button>
+                        <button class="btn-primary relay-btn" onclick="sendButton('relay5')">Heater</button>
                         <div id="status-relay5" class="relay-status">OFF</div>
                     </div>
                 </div>
@@ -63,6 +71,45 @@
                         <div style="font-size:0.9em; color:#555; text-align:center;">(klik untuk ganti)</div>
                     </div>
                     <!-- Connection status removed -->
+                </div>
+            </div>
+            <div class="card" style="margin-top: 20px;">
+                <div class="card-body">
+                    <h3 style="text-align:center; font-size:1.3em;">Threshold Settings</h3>
+                    <div class="threshold-controls" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
+                        <div class="threshold-group">
+                            <h4 style="text-align: center;">pH</h4>
+                            <div class="input-group">
+                                <label>Min: <input type="number" id="ph-min" step="0.1" class="form-control"></label>
+                                <label>Max: <input type="number" id="ph-max" step="0.1" class="form-control"></label>
+                                <button onclick="updateThreshold('ph')" class="btn btn-primary">Update</button>
+                            </div>
+                        </div>
+                        <div class="threshold-group">
+                            <h4 style="text-align: center;">Kekeruhan</h4>
+                            <div class="input-group">
+                                <label>Min: <input type="number" id="turb-min" step="0.1" class="form-control"></label>
+                                <label>Max: <input type="number" id="turb-max" step="0.1" class="form-control"></label>
+                                <button onclick="updateThreshold('turb')" class="btn btn-primary">Update</button>
+                            </div>
+                        </div>
+                        <div class="threshold-group">
+                            <h4 style="text-align: center;">Dissolved Oxygen</h4>
+                            <div class="input-group">
+                                <label>Min: <input type="number" id="oks-min" step="0.1" class="form-control"></label>
+                                <label>Max: <input type="number" id="oks-max" step="0.1" class="form-control"></label>
+                                <button onclick="updateThreshold('oks')" class="btn btn-primary">Update</button>
+                            </div>
+                        </div>
+                        <div class="threshold-group">
+                            <h4 style="text-align: center;">Temperature</h4>
+                            <div class="input-group">
+                                <label>Min: <input type="number" id="suhu-min" step="0.1" class="form-control"></label>
+                                <label>Max: <input type="number" id="suhu-max" step="0.1" class="form-control"></label>
+                                <button onclick="updateThreshold('suhu')" class="btn btn-primary">Update</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="grid-container" style="margin-top: 20px;">

@@ -12,13 +12,14 @@
 #include <FS.h>
 #include <SPIFFS.h>
 #include <WebSocketsServer.h>
+#include <ArduinoJson.h>
 
 // ===== User defined constants =====
 // sudah terdefinisi di header esp32-hal-gpio.h
 // #define GPIO_OUT_W1TS_REG 0x3FF44008
 // #define GPIO_OUT_W1TC_REG 0x3FF4400C
 
-#define MODE_STA_OR_AP "ap" // "sta" atau "ap"
+#define MODE_STA_OR_AP "ap"     // "sta" atau "ap"
 #define TWO_POINT_CALIBRATION 1 // 0 = single point, 1 = two point
 // Single point calibration needs to be filled CAL1_V and CAL1_T
 #define CAL1_V (1100) // mv
@@ -26,7 +27,7 @@
 // Two-point calibration needs to be filled CAL2_V and CAL2_T
 // CAL1 High temperature point, CAL2 Low temperature point
 #define CAL2_V (650) // mv
-#define CAL2_T (23)   // ℃
+#define CAL2_T (23)  // ℃
 
 // Pin definitions
 #define PIN_PH 32
@@ -67,7 +68,8 @@ public:
   {
     VOLTAGE,
     FINAL,
-    PERCENT
+    PERCENT,
+    ADC
   };
   /// @brief inisialisasi pin analog dengan filter alpha
   /// @param p pin analog
@@ -88,7 +90,7 @@ public:
     {
       smoothedRaw = (alpha * (float)analogRead(pin)) + ((1 - alpha) * smoothedRaw);
     }
-    
+
     voltage = (round(smoothedRaw) / 4095.0f) * 3.3f;
     percent = (round(smoothedRaw) / 4095.0f) * 100.0f;
     // percent = smoothedRaw;
@@ -107,6 +109,8 @@ public:
       return final;
     case PERCENT:
       return percent;
+    case ADC:
+      return smoothedRaw;
     default:
       return 0.0; // Nilai default jika ada case yang tidak terduga
     }
@@ -230,12 +234,24 @@ private:
   int count; // Menghitung node secara efisien
 };
 
+struct threshold_t
+{
+  float min;
+  float max;
+};
+
 // ===== User Global variables =====
 Analog phSensor = Analog(PIN_PH, 0.1f);
 Analog turbiditySensor = Analog(PIN_TURBIDITY, 0.1f);
 Analog oksigenSensor = Analog(PIN_OKSIGEN, 0.1f);
 Analog potensiometer = Analog(PIN_POTENSIO, 0.1f);
+
 static float suhuValue = 0;
+
+threshold_t phThreshold = {6.5f, 8.5f};
+threshold_t turbidityThreshold = {20.0f, 70.0f}; //
+threshold_t oksigenThreshold = {5.0f, 14.0f};
+threshold_t suhuThreshold = {20.0f, 30.0f};
 
 unsigned long lastTempRequest = 0;
 
@@ -258,10 +274,9 @@ bool autoMode = true; // true = otomatis, false = manual
 unsigned long lastClientPing = 0;
 const unsigned long clientTimeoutMs = 6000; // jika tidak ada ping dalam 6s -> dianggap tidak connected
 
-
 // ===== User defined functions =====
 // ===== Web =====
-void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length);
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length);
 
 void handleRoot();
 void handleData();
@@ -274,6 +289,8 @@ void handleLuxonJs();
 void handleAdapterLuxonJs();
 void handleStreamingPluginJs();
 void handleSbAdmin2Css();
+void handleGetThresholds();
+void handleSetThresholds();
 // ===== LCD I2C =====
 void timerLcdI2c();
 
@@ -301,15 +318,21 @@ void fastWrite(uint8_t pin, uint8_t value)
 
 void handlePhSensor()
 {
-  const float calibration_value = 21.34 + 0.0f;
+  const float calibration_value = 1.85f;
   float voltage = phSensor.getVar(Analog::VOLTAGE);
 
-  float phValue = -5.70 * voltage + calibration_value;
+  float adc = phSensor.getVar(Analog::ADC);
+  // Serial.print(voltage*1000.0f);
+  // Serial.print(" ");
+  // Serial.println(int(adc));
+
+  float phValue = 3.5 * voltage * (5.0 / 3.3) + calibration_value;
   phSensor.setFinal(phValue);
 }
 
-float map_float(float x, float in_min, float in_max, float out_min, float out_max) {
-    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+float map_float(float x, float in_min, float in_max, float out_min, float out_max)
+{
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
 void handleTurbiditySensor()
@@ -336,12 +359,12 @@ void handleTurbiditySensor()
     voltage = dirty_point;
 
   // float ntu = map_float(voltage, 0, clear_point, 3000, 0);
-  float ntu = adc_min + ((voltage - dirty_point)/(clear_point -dirty_point)*(adc_max-adc_min));
+  float ntu = adc_min + ((voltage - dirty_point) / (clear_point - dirty_point) * (adc_max - adc_min));
 
   // if (ntu < 0)
   //   ntu = 0;
   // if (ntu > NTU_MAX)
-  //   ntu = NTU_MAX; 
+  //   ntu = NTU_MAX;
   ntu = map_float(ntu, adc_min, adc_max, 100, 0);
 
   // int adcturbidity = turbiditySensor.getVar(Analog::PERCENT);
@@ -372,7 +395,7 @@ void handleOksigenSensor()
 
   uint8_t currentTemperature = (uint8_t)round(suhuValue);
   // Serial.println(analogRead(PIN_OKSIGEN));
-  Serial.println(voltage_mv);
+  // Serial.println(voltage_mv);
   int tes = analogRead(PIN_OKSIGEN);
   static int anjay = 0;
   if (tes > 0)
@@ -388,29 +411,38 @@ void handleOksigenSensor()
 }
 
 // helper: set relay state and immediately update pin (uses fastWrite)
-void setRelay(int idx, bool state) {
-  if (idx < 0 || idx > 4) return; // Ubah dari 3 ke 4 untuk indeks maksimum
+void setRelay(int idx, bool state)
+{
+  if (idx < 0 || idx > 4)
+    return;
   relayState[idx] = state;
   int pin;
-  // Tentukan pin berdasarkan indeks
-  switch(idx) {
-    case 0: pin = PIN_RELAY_1; break;
-    case 1: pin = PIN_RELAY_2; break;
-    case 2: pin = PIN_RELAY_3; break;
-    case 3: pin = PIN_RELAY_4; break;
-    case 4: pin = PIN_RELAY_5; break;
-    default: return;
+  switch (idx)
+  {
+  case 0: pin = PIN_RELAY_1; break;
+  case 1: pin = PIN_RELAY_2; break;
+  case 2: pin = PIN_RELAY_3; break;
+  case 3: pin = PIN_RELAY_4; break;
+  case 4: pin = PIN_RELAY_5; break;
+  default: return;
   }
   fastWrite(pin, relayState[idx] ? LOW : HIGH);
+
+  // Broadcast perubahan state relay
+  String status = "{\"relay" + String(idx + 1) + "\":" + (state ? "true" : "false") + "}";
+  webSocket.broadcastTXT(status);
 }
 
-void handleButton() {
-  if (!server.hasArg("relay") || !server.hasArg("state")) {
+void handleButton()
+{
+  if (!server.hasArg("relay") || !server.hasArg("state"))
+  {
     server.send(400, "application/json", "{\"error\":\"Missing relay or state parameter\"}");
     return;
   }
   // Jika mode otomatis aktif, tolak perubahan manual
-  if (autoMode) {
+  if (autoMode)
+  {
     server.send(403, "application/json", "{\"error\":\"Device in automatic mode\"}");
     return;
   }
@@ -418,76 +450,134 @@ void handleButton() {
   String relay = server.arg("relay");
   String state = server.arg("state"); // expected "on" or "off"
   int idx = -1;
-  if (relay == "relay1") idx = 0;
-  else if (relay == "relay2") idx = 1;
-  else if (relay == "relay3") idx = 2;
-  else if (relay == "relay4") idx = 3;
-  else if (relay == "relay5") idx = 4; // Tambahkan ini
-  
-  if (idx == -1) {
+  if (relay == "relay1")
+    idx = 0;
+  else if (relay == "relay2")
+    idx = 1;
+  else if (relay == "relay3")
+    idx = 2;
+  else if (relay == "relay4")
+    idx = 3;
+  else if (relay == "relay5")
+    idx = 4; // Tambahkan ini
+
+  if (idx == -1)
+  {
     server.send(400, "application/json", "{\"error\":\"Invalid relay\"}");
     return;
   }
 
   // server is authoritative: apply requested state
-  if (state == "on") setRelay(idx, true);
-  else if (state == "off") setRelay(idx, false);
-  else {
+  if (state == "on")
+    setRelay(idx, true);
+  else if (state == "off")
+    setRelay(idx, false);
+  else
+  {
     server.send(400, "application/json", "{\"error\":\"Invalid state\"}");
     return;
   }
 
   // Kirim status semua relay sebagai JSON (tambahkan mode + koneksi nanti via handleRelayStatus)
   String json = "{";
-  for (int i = 0; i < 5; i++) {
-    json += "\"relay" + String(i+1) + "\":" + (relayState[i] ? "true" : "false");
-    if (i < 4) json += ","; 
+  for (int i = 0; i < 5; i++)
+  {
+    json += "\"relay" + String(i + 1) + "\":" + (relayState[i] ? "true" : "false");
+    if (i < 4)
+      json += ",";
   }
   json += "}";
   server.send(200, "application/json", json);
 }
 
-
 // contoh otomatis: ubah relay berdasarkan kondisi sensor / jadwal
-void autoRelayLogic() {
+void autoRelayLogic()
+{
   static unsigned long lastAutoMillis = 0;
-  const unsigned long interval = 10; // cek tiap 10 detik
-  if (millis() - lastAutoMillis < interval) return;
+
+  static unsigned long lastSuhuMillis = 0;
+  static unsigned long lastPhMillis = 0;
+  static unsigned long lastTurbidityMillis = 0;
+  static unsigned long lastOksigenMillis = 0;
+
+  static bool actSuhu = false;
+  static bool actPh = false;
+  static bool actTurbidity = false;
+  static bool actOksigen = false;
+
+  if (millis() - lastAutoMillis < 10)
+    return;
   lastAutoMillis = millis();
 
   bool stateChanged = false;
-  bool oldStates[4];
-  // Simpan status relay sebelumnya
-  for(int i = 0; i < 4; i++) {
+  bool oldStates[5];
+  for (int i = 0; i < 5; i++)
+  {
     oldStates[i] = relayState[i];
   }
 
   // Contoh 1: jika suhu > 30C -> nyalakan relay1, else matikan
-  if (suhuValue < 20.0) setRelay(4, true);
-  else setRelay(0, false);
+  if (suhuValue < suhuThreshold.min) setRelay(4, true);
+  else setRelay(4, false);
 
+  if (turbiditySensor.getVar(Analog::FINAL) > turbidityThreshold.max) setRelay(2, true);
+  else if (turbiditySensor.getVar(Analog::FINAL) < turbidityThreshold.min) setRelay(2, false);
+  else {
+    // hidupkan matikan berdasarkan timer setiap 5 detik
+    if (millis() - lastTurbidityMillis > 5000)
+    {
+      lastTurbidityMillis = millis();
+      actTurbidity = !actTurbidity;
+      setRelay(2, actTurbidity);
+    }
+  }
+
+  if (phSensor.getVar(Analog::FINAL) > phThreshold.max) setRelay(0, true);
+  else if (phSensor.getVar(Analog::FINAL) < phThreshold.min) setRelay(1, true);
+  else {
+    setRelay(0, false);
+    setRelay(1, false);
+  }
+
+  if (oksigenSensor.getVar(Analog::FINAL) < oksigenThreshold.min) setRelay(3, true);
+  else if (oksigenSensor.getVar(Analog::FINAL) > oksigenThreshold.max) setRelay(3, false);
+  else
+  {
+    // hidupkan matikan berdasarkan timer setiap 5 detik
+    if (millis() - lastOksigenMillis > 5000)
+    {
+      lastOksigenMillis = millis();
+      actOksigen = !actOksigen;
+      setRelay(3, actOksigen);
+    }
+  }
   // Contoh 2: jika potensiometer (percent) > 50 -> nyalakan relay2
-  float potPercent = potensiometer.getVar(Analog::PERCENT);
-  if (potPercent > 50.0) setRelay(1, true);
-  else setRelay(1, false);
+  // float potPercent = potensiometer.getVar(Analog::PERCENT);
+  // if (potPercent > 50.0) setRelay(1, true);
+  // else setRelay(1, false);
 
   // Cek apakah ada perubahan status
-  for(int i = 0; i < 4; i++) {
-    if(oldStates[i] != relayState[i]) {
+  for (int i = 0; i < 5; i++)
+  {
+    if (oldStates[i] != relayState[i])
+    {
       stateChanged = true;
       break;
     }
   }
 
   // Jika ada perubahan, kirim update ke semua client
-  if(stateChanged) {
-    String json = "{";
-    for(int i = 0; i < 4; i++) {
-      json += "\"relay" + String(i+1) + "\":" + (relayState[i] ? "true" : "false");
-      if(i < 3) json += ",";
+  if (stateChanged)
+  {
+    String status = "{";
+    for (int i = 0; i < 5; i++)
+    {
+      status += "\"relay" + String(i + 1) + "\":" + (relayState[i] ? "true" : "false");
+      if (i < 4)
+        status += ",";
     }
-    json += "}";
-    webSocket.broadcastTXT(json);
+    status += ",\"mode\":\"" + String(autoMode ? "auto" : "manual") + "\"}";
+    webSocket.broadcastTXT(status);
   }
 }
 
@@ -593,6 +683,9 @@ void setup()
   server.on("/", handleRoot);
   server.on("/data", handleData); // historis (opsional)
   server.on("/last", handleLast); // realtime
+  // Tambahkan handler untuk thresholds
+  server.on("/thresholds", HTTP_GET, handleGetThresholds);
+  server.on("/thresholds", HTTP_POST, handleSetThresholds);
   server.begin();
 
   webSocket.begin();
@@ -640,11 +733,12 @@ void loop()
   fastWrite(PIN_RELAY_5, relayState[4] ? LOW : HIGH); // Tambahkan ini
   // fastWrite(PIN_RELAY_5, HIGH);
 
-  printf(relayState[4] ? "0" : "1");
+  // printf(relayState[4] ? "0" : "1");
   // printf("\n");
-  
+
   // Panggil auto logic hanya saat autoMode = true
-  if (autoMode) {
+  if (autoMode)
+  {
     autoRelayLogic();
   }
 
@@ -720,7 +814,7 @@ void timerLcdI2c()
 
     // %-4.0f artinya: format float, lebar 4 karakter, 0 angka di belakang koma, rata kiri
     // %-3d%% artinya: format integer, lebar 3 karakter, rata kiri, diakhiri tanda %
-    sprintf(line2, "Tb:%-3.0f%%  P:%-3d%%", turb_val, pot_val);
+    sprintf(line2, "Tb:%-3.1f%%  O:%-2.1f", turb_val, oks_val);
 
     // Cetak ke LCD
     lcd.setCursor(0, 0);
@@ -843,13 +937,15 @@ void handleStreamingPluginJs()
   file.close();
 }
 
-
 /// Handler untuk memberikan status semua relay dalam JSON (tambahkan mode + koneksi)
-void handleRelayStatus() {
+void handleRelayStatus()
+{
   String json = "{";
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < 5; ++i)
+  { // <-- perbarui ke 5 relay
     json += "\"relay" + String(i + 1) + "\":" + (relayState[i] ? "true" : "false");
-    if (i < 3) json += ",";
+    if (i < 4)
+      json += ",";
   }
   json += ",\"mode\":\"";
   json += (autoMode ? "auto" : "manual");
@@ -858,7 +954,8 @@ void handleRelayStatus() {
 }
 
 // Handler untuk mendapatkan mode
-void handleModeGet() {
+void handleModeGet()
+{
   String json = "{";
   json += "\"mode\":\"";
   json += (autoMode ? "auto" : "manual");
@@ -867,15 +964,20 @@ void handleModeGet() {
 }
 
 // Handler untuk mengubah mode (POST ?mode=auto|manual)
-void handleModePost() {
-  if (!server.hasArg("mode")) {
+void handleModePost()
+{
+  if (!server.hasArg("mode"))
+  {
     server.send(400, "application/json", "{\"error\":\"Missing mode parameter\"}");
     return;
   }
   String mode = server.arg("mode");
-  if (mode == "auto") autoMode = true;
-  else if (mode == "manual") autoMode = false;
-  else {
+  if (mode == "auto")
+    autoMode = true;
+  else if (mode == "manual")
+    autoMode = false;
+  else
+  {
     server.send(400, "application/json", "{\"error\":\"Invalid mode\"}");
     return;
   }
@@ -887,6 +989,70 @@ void handleModePost() {
   server.send(200, "application/json", json);
 }
 
+void handleGetThresholds()
+{
+  String json = "{";
+  json += "\"ph\":{\"min\":" + String(phThreshold.min) + ",\"max\":" + String(phThreshold.max) + "},";
+  json += "\"turb\":{\"min\":" + String(turbidityThreshold.min) + ",\"max\":" + String(turbidityThreshold.max) + "},";
+  json += "\"oks\":{\"min\":" + String(oksigenThreshold.min) + ",\"max\":" + String(oksigenThreshold.max) + "},";
+  json += "\"suhu\":{\"min\":" + String(suhuThreshold.min) + ",\"max\":" + String(suhuThreshold.max) + "}";
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void handleSetThresholds()
+{
+  if (!server.hasArg("plain"))
+  {
+    server.send(400, "text/plain", "No body");
+    return;
+  }
+
+  String body = server.arg("plain");
+  StaticJsonDocument<200> doc;
+  DeserializationError error = deserializeJson(doc, body);
+
+  if (error)
+  {
+    server.send(400, "text/plain", "Invalid JSON");
+    return;
+  }
+
+  const char *sensor = doc["sensor"];
+  float min_val = doc["min"];
+  float max_val = doc["max"];
+
+  if (!sensor || min_val >= max_val)
+  {
+    server.send(400, "text/plain", "Invalid parameters");
+    return;
+  }
+
+  // Update appropriate threshold
+  if (strcmp(sensor, "ph") == 0)
+  {
+    phThreshold = {min_val, max_val};
+  }
+  else if (strcmp(sensor, "turb") == 0)
+  {
+    turbidityThreshold = {min_val, max_val};
+  }
+  else if (strcmp(sensor, "oks") == 0)
+  {
+    oksigenThreshold = {min_val, max_val};
+  }
+  else if (strcmp(sensor, "suhu") == 0)
+  {
+    suhuThreshold = {min_val, max_val};
+  }
+  else
+  {
+    server.send(400, "text/plain", "Invalid sensor");
+    return;
+  }
+
+  server.send(200, "text/plain", "OK");
+}
 void handleRoot()
 {
   // Baca file /index.html dari SPIFFS dan stream ke client
@@ -901,42 +1067,58 @@ void handleRoot()
 }
 
 // Tambahkan setelah deklarasi WebServer
-void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
-    switch(type) {
-        case WStype_CONNECTED:
-            {
-                Serial.printf("[%u] Connected!\n", num);
-                // Kirim status awal ke client yang baru terkoneksi
-                String status = "{";
-                for(int i = 0; i < 5; i++) { // Ubah dari 4 ke 5
-                    status += "\"relay" + String(i+1) + "\":" + (relayState[i] ? "true" : "false");
-                    if(i < 4) status += ","; // Ubah dari 3 ke 4
-                }
-                status += ",\"mode\":\"" + String(autoMode ? "auto" : "manual") + "\"}";
-                webSocket.sendTXT(num, status);
-            }
-            break;
-        case WStype_TEXT:
-            {
-                String text = String((char*)payload);
-                if(text.startsWith("relay")) {
-                    int relay = text[5] - '1'; // relay1 -> 0, relay2 -> 1, etc.
-                    bool state = text.endsWith("on");
-                    if(relay >= 0 && relay < 5 && !autoMode) { // Ubah dari 4 ke 5
-                        setRelay(relay, state);
-                        String status = "{\"relay" + String(relay+1) + "\":" + (state ? "true" : "false") + "}";
-                        webSocket.broadcastTXT(status);
-                    }
-                }
-                else if(text == "mode_auto") {
-                    autoMode = true;
-                    webSocket.broadcastTXT("{\"mode\":\"auto\"}");
-                }
-                else if(text == "mode_manual") {
-                    autoMode = false;
-                    webSocket.broadcastTXT("{\"mode\":\"manual\"}");
-                }
-            }
-            break;
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length)
+{
+  switch (type)
+  {
+  case WStype_CONNECTED:
+  {
+    Serial.printf("[%u] Connected!\n", num);
+    // Kirim status awal ke client yang baru terkoneksi
+    String status = "{";
+    for (int i = 0; i < 5; i++)
+    {
+      status += "\"relay" + String(i + 1) + "\":" + (relayState[i] ? "true" : "false");
+      if (i < 4)
+        status += ",";
     }
+    status += ",\"mode\":\"" + String(autoMode ? "auto" : "manual") + "\"}";
+    webSocket.sendTXT(num, status);
+  }
+  break;
+  case WStype_TEXT:
+  {
+    String text = String((char *)payload);
+    if (text.startsWith("relay"))
+    {
+      int relay = text[5] - '1'; // relay1 -> 0, relay2 -> 1, etc.
+      bool state = text.endsWith("on");
+      if (relay >= 0 && relay < 5 && !autoMode)
+      {
+        setRelay(relay, state);
+        // Broadcast status baru ke semua client
+        String status = "{";
+        for (int i = 0; i < 5; i++)
+        {
+          status += "\"relay" + String(i + 1) + "\":" + (relayState[i] ? "true" : "false");
+          if (i < 4)
+            status += ",";
+        }
+        status += ",\"mode\":\"" + String(autoMode ? "auto" : "manual") + "\"}";
+        webSocket.broadcastTXT(status);
+      }
+    }
+    else if (text == "mode_auto")
+    {
+      autoMode = true;
+      webSocket.broadcastTXT("{\"mode\":\"auto\"}");
+    }
+    else if (text == "mode_manual")
+    {
+      autoMode = false;
+      webSocket.broadcastTXT("{\"mode\":\"manual\"}");
+    }
+  }
+  break;
+  }
 }

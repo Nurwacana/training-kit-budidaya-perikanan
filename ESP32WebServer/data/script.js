@@ -135,7 +135,6 @@ document.addEventListener('DOMContentLoaded', loadInitialData);
 // === WebSocket Logic ===
 let ws;
 function connectWebSocket() {
-    // Gunakan protocol ws:// dan port 81
     ws = new WebSocket(`ws://${window.location.hostname}:81`);
     
     ws.onopen = () => {
@@ -144,13 +143,13 @@ function connectWebSocket() {
     
     ws.onclose = () => {
         console.log('WebSocket Disconnected');
-        // Reconnect after 1 second
         setTimeout(connectWebSocket, 1000);
     };
     
     ws.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
+            console.log('Received WebSocket data:', data); // Debug log
             updateRelayStatusUI(data);
         } catch(e) {
             console.error('WebSocket message error:', e);
@@ -189,36 +188,97 @@ window.addEventListener('DOMContentLoaded', () => {
 // Update UI untuk status relay dan mode (fungsi dipanggil dari beberapa tempat)
 function updateRelayStatusUI(status) {
   try {
-    // update each relay display if present in status
-    for (let i = 1; i <= 5; i++) { // Ubah dari 4 ke 5
+    // Update relay status
+    for (let i = 1; i <= 5; i++) {
       const key = 'relay' + i;
-      if (Object.prototype.hasOwnProperty.call(status, key)) {
-        const val = status[key];
-        const isOn = (val === true || val === 'true' || val === 1 || val === '1');
+      if (status.hasOwnProperty(key)) {
+        const isOn = status[key];
         const statusEl = document.getElementById('status-' + key);
         if (statusEl) {
           statusEl.textContent = isOn ? 'ON' : 'OFF';
-        }
-        // enable/disable button based on presence of mode (buttons will be toggled later by mode logic)
-        const btn = statusEl ? statusEl.previousElementSibling : null;
-        if (btn && btn.classList && btn.classList.contains('relay-btn')) {
-          // keep button enabled; mode handling below may disable
-          btn.disabled = false;
+          // Update button state/appearance
+          const btn = statusEl.previousElementSibling;
+          if (btn && btn.classList.contains('relay-btn')) {
+            btn.classList.toggle('active', isOn);
+          }
         }
       }
     }
 
-    // update mode button and disable relay buttons when in auto mode
-    if (status.mode) {
+    // Update mode if present
+    if (status.hasOwnProperty('mode')) {
       const modeBtn = document.getElementById('mode-toggle');
-      if (modeBtn) modeBtn.textContent = (status.mode === 'auto') ? 'Auto' : 'Manual';
-
-      const disableRelays = (status.mode === 'auto');
-      document.querySelectorAll('.relay-btn').forEach(btn => {
-        btn.disabled = disableRelays;
-      });
+      if (modeBtn) {
+        modeBtn.textContent = status.mode.charAt(0).toUpperCase() + status.mode.slice(1);
+        // Update button states based on mode
+        const buttons = document.querySelectorAll('.relay-btn');
+        buttons.forEach(btn => {
+          btn.disabled = status.mode === 'auto';
+        });
+      }
     }
   } catch (e) {
-    console.warn('updateRelayStatusUI error', e);
+    console.error('Error updating UI:', e);
   }
 }
+
+// Add these after your existing code
+
+// Function to load current thresholds
+async function loadThresholds() {
+    try {
+        const response = await fetch('/thresholds');
+        const thresholds = await response.json();
+        
+        // Update input fields
+        for (const sensor of ['ph', 'turb', 'oks', 'suhu']) {
+            document.getElementById(`${sensor}-min`).value = thresholds[sensor].min;
+            document.getElementById(`${sensor}-max`).value = thresholds[sensor].max;
+        }
+    } catch (error) {
+        console.error('Failed to load thresholds:', error);
+    }
+}
+
+// Function to update threshold
+async function updateThreshold(sensor) {
+    const minVal = parseFloat(document.getElementById(`${sensor}-min`).value);
+    const maxVal = parseFloat(document.getElementById(`${sensor}-max`).value);
+    
+    if (isNaN(minVal) || isNaN(maxVal)) {
+        alert('Please enter valid numbers');
+        return;
+    }
+    
+    if (minVal >= maxVal) {
+        alert('Minimum value must be less than maximum value');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/thresholds', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                sensor,
+                min: minVal,
+                max: maxVal
+            })
+        });
+        
+        if (!response.ok) throw new Error('Failed to update threshold');
+        
+        alert('Threshold updated successfully');
+    } catch (error) {
+        console.error('Error updating threshold:', error);
+        alert('Failed to update threshold');
+    }
+}
+
+// Load thresholds when page loads
+document.addEventListener('DOMContentLoaded', () => {
+    loadThresholds();
+    // ... existing DOMContentLoaded handlers ...
+});
