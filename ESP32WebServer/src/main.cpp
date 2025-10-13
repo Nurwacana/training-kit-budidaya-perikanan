@@ -501,7 +501,7 @@ void autoRelayLogic()
   static unsigned long lastOksigenMillis = 0;
 
   static bool actSuhu = false;
-  static bool actPh = false;
+  static int actPh = -1;
   static bool actTurbidity = false;
   static bool actOksigen = false;
 
@@ -532,24 +532,57 @@ void autoRelayLogic()
     }
   }
 
-  if (phSensor.getVar(Analog::FINAL) > phThreshold.max) setRelay(0, true);
-  else if (phSensor.getVar(Analog::FINAL) < phThreshold.min) setRelay(1, true);
-  else {
-    setRelay(0, false);
-    setRelay(1, false);
-  }
+float ph = phSensor.getVar(Analog::FINAL);
+unsigned long now = millis();
+
+// if (ph < phThreshold.min) {                    // pH terlalu rendah → Aktuator 0
+//     if (actPh != 0) {
+//         actPh = 0;
+//         lastPhMillis = now;                   // mulai timer baru
+//     }
+
+//     if (now - lastPhMillis <= 5000) {
+//         setRelay(0, true);
+//     } else {
+//         setRelay(0, false);
+//     }
+//     setRelay(1, false);                       // relay lain dimatikan
+// } else if (ph > phThreshold.max) {               // pH terlalu tinggi → Aktuator 1
+//     if (actPh != 1) {
+//         actPh = 1;
+//         lastPhMillis = now;
+//     }
+
+//     if (now - lastPhMillis <= 5000) {
+//         setRelay(1, true);
+//     } else {
+//         setRelay(1, false);
+//     }
+//     setRelay(0, false);
+// } else {                                         // pH normal
+//     actPh = -1;                                // tidak dalam kondisi koreksi
+//     setRelay(0, false);
+//     setRelay(1, false);
+//     lastPhMillis = now;                        // reset timer
+// }
+
 
   if (oksigenSensor.getVar(Analog::FINAL) < oksigenThreshold.min) setRelay(3, true);
   else if (oksigenSensor.getVar(Analog::FINAL) > oksigenThreshold.max) setRelay(3, false);
   else
   {
+    setRelay(3, false);
     // hidupkan matikan berdasarkan timer setiap 5 detik
-    if (millis() - lastOksigenMillis > 5000)
-    {
-      lastOksigenMillis = millis();
-      actOksigen = !actOksigen;
-      setRelay(3, actOksigen);
-    }
+    // if ((millis() - lastOksigenMillis > 2000) && actOksigen)
+    // {
+    //   lastOksigenMillis = millis();
+    //   actOksigen = !actOksigen;
+    //   setRelay(3, actOksigen);
+    // } else if ((millis() - lastOksigenMillis > 5000) && !actOksigen) {
+    //   lastOksigenMillis = millis();
+    //   actOksigen = !actOksigen;
+    //   setRelay(3, actOksigen);
+    // }
   }
   // Contoh 2: jika potensiometer (percent) > 50 -> nyalakan relay2
   // float potPercent = potensiometer.getVar(Analog::PERCENT);
